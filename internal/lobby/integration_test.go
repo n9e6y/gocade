@@ -16,6 +16,12 @@ import (
 // 127.0.0.1:0 and returns its address. It is stopped when the test ends.
 func startArena(t *testing.T) string {
 	t.Helper()
+	return startArenaWith(t, ticTacToeRegistry(t))
+}
+
+// startArenaWith is startArena offering the games in reg.
+func startArenaWith(t *testing.T, reg *Registry) string {
+	t.Helper()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -23,7 +29,7 @@ func startArena(t *testing.T) string {
 	}
 	log := discardLogger()
 
-	lob := New(ticTacToeRegistry(t), log)
+	lob := New(reg, log)
 	srv := server.New(ln, lob, log)
 
 	// Two contexts, so the server can stop (and say goodbye to every session)

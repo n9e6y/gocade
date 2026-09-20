@@ -54,6 +54,7 @@ var (
 	ErrFull          = errors.New("game is full")
 	ErrAlreadyJoined = errors.New("player already joined")
 	ErrOver          = errors.New("game is over")
+	ErrStarted       = errors.New("game already started")
 )
 
 // Game is the rules of one game, as seen by a Room. A Game is only ever used

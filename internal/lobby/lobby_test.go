@@ -35,15 +35,21 @@ func discardLogger() *slog.Logger {
 // it is and who is in it ("room 2: p3,p4"), so a test can see from a
 // player's screen exactly who they were matched with.
 type fakeGame struct {
-	n     int // creation order, starting at 1
-	max   int
-	ids   []game.PlayerID
-	names []string
-	state game.State
+	n       int // creation order, starting at 1
+	max     int
+	startAt int // if > 0, the game starts once this many have joined, before it is full (like Tron)
+	ids     []game.PlayerID
+	names   []string
+	state   game.State
 }
 
-func (g *fakeGame) Name() string             { return "fake" }
-func (g *fakeGame) Seats() (min, max int)    { return g.max, g.max }
+func (g *fakeGame) Name() string { return "fake" }
+func (g *fakeGame) Seats() (min, max int) {
+	if g.startAt > 0 {
+		return g.startAt, g.max
+	}
+	return g.max, g.max
+}
 func (g *fakeGame) TickEvery() time.Duration { return 0 }
 func (g *fakeGame) Tick()                    {}
 func (g *fakeGame) State() game.State        { return g.state }
@@ -53,12 +59,14 @@ func (g *fakeGame) Join(p game.PlayerID, name string) error {
 	switch {
 	case g.state == game.StateOver:
 		return game.ErrOver
+	case g.state == game.StateRunning && g.startAt > 0:
+		return game.ErrStarted // started before it was full: closed to newcomers
 	case len(g.ids) == g.max:
 		return game.ErrFull
 	}
 	g.ids = append(g.ids, p)
 	g.names = append(g.names, name)
-	if len(g.ids) == g.max {
+	if len(g.ids) == g.max || (g.startAt > 0 && len(g.ids) >= g.startAt) {
 		g.state = game.StateRunning
 	}
 	return nil
@@ -87,23 +95,25 @@ func (g *fakeGame) View(game.PlayerID) *render.Canvas {
 	return c
 }
 
-// fakeRegistry offers three fake games: "A" and "B" (2 seats) and "T" (3
-// seats), which are menu choices 1, 2 and 3.
+// fakeRegistry offers four fake games, which are menu choices 1 to 4: "A" and
+// "B" (2 seats), "T" (3 seats, starts when full) and "S" (3 seats, but it
+// starts as soon as 2 have joined, so a third player is turned away).
 func fakeRegistry(t *testing.T) *Registry {
 	t.Helper()
 	var created atomic.Int64
-	factory := func(max int) Factory {
+	factory := func(max, startAt int) Factory {
 		return func() game.Game {
-			return &fakeGame{n: int(created.Add(1)), max: max}
+			return &fakeGame{n: int(created.Add(1)), max: max, startAt: startAt}
 		}
 	}
 	reg := NewRegistry()
 	for _, e := range []struct {
-		name  string
-		title string
-		max   int
-	}{{"a", "Game A", 2}, {"b", "Game B", 2}, {"t", "Game T", 3}} {
-		if err := reg.Register(e.name, e.title, factory(e.max)); err != nil {
+		name    string
+		title   string
+		max     int
+		startAt int
+	}{{"a", "Game A", 2, 0}, {"b", "Game B", 2, 0}, {"t", "Game T", 3, 0}, {"s", "Game S", 3, 2}} {
+		if err := reg.Register(e.name, e.title, factory(e.max, e.startAt)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -412,6 +422,26 @@ func TestMatchmaking(t *testing.T) {
 			want:    map[int]string{1: "room 2: p2,p1", 2: "room 2: p2,p1"},
 			// both players are in the running game in room 2
 			wantRooms: 1,
+		},
+		{
+			name:    "a room that has already started is skipped for a new one",
+			players: 3,
+			acts:    []act{{1, "4"}, {2, "4"}, {3, "4"}},
+			// game S starts at two players even though it has three seats, so p3
+			// is turned away by room 1 and gets a room of their own
+			want:      map[int]string{1: "room 1: p1,p2", 2: "room 1: p1,p2", 3: "room 2: p3"},
+			wantRooms: 2,
+		},
+		{
+			name:    "a started room is never offered again",
+			players: 5,
+			acts:    []act{{1, "4"}, {2, "4"}, {3, "4"}, {4, "4"}, {5, "4"}},
+			want: map[int]string{
+				1: "room 1: p1,p2", 2: "room 1: p1,p2",
+				3: "room 2: p3,p4", 4: "room 2: p3,p4",
+				5: "room 3: p5",
+			},
+			wantRooms: 3,
 		},
 		{
 			name:      "an out-of-range digit does nothing",

@@ -68,16 +68,29 @@ func TestRun_ServesTheLobbyAndStopsOnCancel(t *testing.T) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(testTimeout))
 
-	// A new player is greeted by the lobby and asked for a nickname.
+	// readUntil reads from the server until the screen has shown text.
 	var got []byte
 	tmp := make([]byte, 4096)
-	for !strings.Contains(string(got), "Choose a nickname") {
-		n, err := conn.Read(tmp)
-		got = append(got, tmp[:n]...)
-		if err != nil {
-			t.Fatalf("reading the game screen: %v (got %q)", err, got)
+	readUntil := func(text string) {
+		t.Helper()
+		for !strings.Contains(string(got), text) {
+			n, err := conn.Read(tmp)
+			got = append(got, tmp[:n]...)
+			if err != nil {
+				t.Fatalf("waiting for %q: %v (got %q)", text, err, got)
+			}
 		}
 	}
+
+	// A new player is greeted by the lobby and asked for a nickname...
+	readUntil("Choose a nickname")
+	if _, err := conn.Write([]byte("bob\r")); err != nil {
+		t.Fatalf("send nickname: %v", err)
+	}
+
+	// ...and then offered every game the server registers.
+	readUntil("1) Tic-Tac-Toe")
+	readUntil("2) Tron")
 
 	cancel()
 	select {

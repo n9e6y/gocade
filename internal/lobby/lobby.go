@@ -9,6 +9,7 @@ package lobby
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 
@@ -282,32 +283,55 @@ func (l *Lobby) showMenu(p *player, notice string) {
 	p.conn.Send(menuFrame(p.name, l.reg.Entries(), notice))
 }
 
-// join puts p in the oldest room of game g that still has a seat, or in a
-// new room if there is none.
+// join puts p in the oldest room of game g that will take them, or in a new
+// room if there is none.
+//
+// A waiting room can turn out to be closed: a game such as Tron starts before
+// it is full, so the room may have started since it was last joined. The room
+// says so with an error, and the lobby then drops it from the waiting list
+// (it is not offered again) and tries the next one. Every retry removes a
+// room, and a fresh room always takes its first player, so the loop ends.
 func (l *Lobby) join(p *player, g Entry) {
-	re := l.oldestWaiting(g.Name)
-	if re == nil {
-		re = l.newRoom(g)
-	}
-
-	// Join waits for the room goroutine. That cannot deadlock: the room
-	// never waits for the lobby (it only closes a channel), and it never
-	// blocks on a player (Send does not block).
-	if err := re.room.Join(p.id, p.name, p.conn); err != nil {
-		l.log.Warn("could not join room", "player", p.id, "game", g.Name, "err", err)
-		if len(re.members) == 0 {
-			l.closeRoom(re)
+	for {
+		re := l.oldestWaiting(g.Name)
+		fresh := re == nil
+		if fresh {
+			re = l.newRoom(g)
 		}
-		l.showMenu(p, "Could not join that game. Try again.")
-		return
-	}
 
-	p.state = stateInRoom
-	p.room = re
-	re.members = append(re.members, p.id)
-	if len(re.members) >= re.max {
-		l.removeWaiting(re) // full: nobody else can be seated
+		// Join waits for the room goroutine. That cannot deadlock: the room
+		// never waits for the lobby (it only closes a channel), and it never
+		// blocks on a player (Send does not block).
+		err := re.room.Join(p.id, p.name, p.conn)
+		switch {
+		case err == nil:
+			p.state = stateInRoom
+			p.room = re
+			re.members = append(re.members, p.id)
+			if len(re.members) >= re.max {
+				l.removeWaiting(re) // full: nobody else can be seated
+			}
+			return
+
+		case !fresh && roomIsClosedToNewcomers(err):
+			l.log.Debug("room no longer takes players", "game", g.Name, "err", err)
+			l.removeWaiting(re)
+
+		default:
+			l.log.Warn("could not join room", "player", p.id, "game", g.Name, "err", err)
+			if len(re.members) == 0 {
+				l.closeRoom(re)
+			}
+			l.showMenu(p, "Could not join that game. Try again.")
+			return
+		}
 	}
+}
+
+// roomIsClosedToNewcomers reports whether err means "this room cannot take
+// you, but another might": it is full, already started, or over.
+func roomIsClosedToNewcomers(err error) bool {
+	return errors.Is(err, game.ErrStarted) || errors.Is(err, game.ErrFull) || errors.Is(err, game.ErrOver)
 }
 
 // leaveRoom takes p out of their room, if they are in one. It waits for the

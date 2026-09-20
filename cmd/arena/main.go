@@ -15,6 +15,7 @@ import (
 
 	"github.com/n9e6y/gocade/internal/game"
 	"github.com/n9e6y/gocade/internal/game/tictactoe"
+	"github.com/n9e6y/gocade/internal/game/tron"
 	"github.com/n9e6y/gocade/internal/lobby"
 	"github.com/n9e6y/gocade/internal/server"
 )
@@ -49,8 +50,17 @@ func run(ctx context.Context, out io.Writer, version, addr string, log *slog.Log
 	// The games on offer. Adding a game to Arena is one new package plus one
 	// line here.
 	reg := lobby.NewRegistry()
-	if err := reg.Register("tictactoe", "Tic-Tac-Toe", func() game.Game { return tictactoe.New() }); err != nil {
-		return fmt.Errorf("register games: %w", err)
+	games := []struct {
+		name, title string
+		factory     lobby.Factory
+	}{
+		{"tictactoe", "Tic-Tac-Toe", func() game.Game { return tictactoe.New() }},
+		{"tron", "Tron", func() game.Game { return tron.New() }},
+	}
+	for _, g := range games {
+		if err := reg.Register(g.name, g.title, g.factory); err != nil {
+			return fmt.Errorf("register games: %w", err)
+		}
 	}
 
 	ln, err := net.Listen("tcp", addr)
