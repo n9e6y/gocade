@@ -41,9 +41,10 @@ const (
 type event struct {
 	kind  eventKind
 	id    game.PlayerID
+	name  string     // evJoin: display name
 	sink  Sink       // evJoin
 	key   input.Key  // evInput
-	reply chan error // evJoin: buffered, so the room never waits for the caller
+	reply chan error // evJoin, evLeave: buffered, so the room never waits for the caller
 }
 
 // Room runs one game.
@@ -54,10 +55,11 @@ type Room struct {
 
 	events chan event
 	done   chan struct{} // closed when Run returns
+	over   chan struct{} // closed once, when the game becomes Over
 
 	// Owned by the Run goroutine; no other goroutine may touch these.
 	players map[game.PlayerID]Sink
-	over    bool // the game-over log line has been written
+	isOver  bool // the game has been seen to be Over (and over has been closed)
 }
 
 // New returns a Room for g. tick drives real-time games; pass nil for a
@@ -70,6 +72,7 @@ func New(g game.Game, tick <-chan time.Time, log *slog.Logger) *Room {
 		log:     log.With("game", g.Name()),
 		events:  make(chan event, eventBuffer),
 		done:    make(chan struct{}),
+		over:    make(chan struct{}),
 		players: make(map[game.PlayerID]Sink),
 	}
 }
@@ -110,10 +113,11 @@ func (r *Room) Run(ctx context.Context) {
 
 // Join seats a player and waits for the answer: nil on success, the game's
 // error (such as game.ErrFull) if it refuses, or ErrClosed if the room has
-// stopped. After a successful Join the room sends s every frame for id.
-func (r *Room) Join(id game.PlayerID, s Sink) error {
+// stopped. name is the player's display name. After a successful Join the
+// room sends s every frame for id.
+func (r *Room) Join(id game.PlayerID, name string, s Sink) error {
 	reply := make(chan error, 1)
-	if !r.send(event{kind: evJoin, id: id, sink: s, reply: reply}) {
+	if !r.send(event{kind: evJoin, id: id, name: name, sink: s, reply: reply}) {
 		return ErrClosed
 	}
 	select {
@@ -124,10 +128,27 @@ func (r *Room) Join(id game.PlayerID, s Sink) error {
 	}
 }
 
-// Leave removes a player. It does nothing if the player is unknown or the
-// room has stopped, and it does not wait.
+// Over returns a channel that is closed when the game becomes Over. The room
+// only ever closes it (it never sends to whoever is watching), so a slow or
+// busy watcher can never block the room.
+func (r *Room) Over() <-chan struct{} {
+	return r.over
+}
+
+// Leave removes a player and waits until the room has done so, or the room
+// has stopped. Waiting matters: once Leave returns, the room will send that
+// player no more frames, so the caller can safely draw something else (such
+// as the menu) on the player's screen. It does nothing for an unknown
+// player.
 func (r *Room) Leave(id game.PlayerID) {
-	r.send(event{kind: evLeave, id: id})
+	reply := make(chan error, 1)
+	if !r.send(event{kind: evLeave, id: id, reply: reply}) {
+		return
+	}
+	select {
+	case <-reply:
+	case <-r.done:
+	}
 }
 
 // Input passes a key from a player to the game. Keys from someone who has
@@ -151,7 +172,7 @@ func (r *Room) send(e event) bool {
 func (r *Room) handle(e event) {
 	switch e.kind {
 	case evJoin:
-		if err := r.g.Join(e.id); err != nil {
+		if err := r.g.Join(e.id, e.name); err != nil {
 			e.reply <- err
 			return
 		}
@@ -163,13 +184,15 @@ func (r *Room) handle(e event) {
 		e.reply <- nil
 
 	case evLeave:
-		if _, ok := r.players[e.id]; !ok {
-			return
+		if _, ok := r.players[e.id]; ok {
+			delete(r.players, e.id)
+			r.g.Leave(e.id)
+			r.log.Info("player left", "player", e.id, "players", len(r.players))
+			r.broadcast()
 		}
-		delete(r.players, e.id)
-		r.g.Leave(e.id)
-		r.log.Info("player left", "player", e.id, "players", len(r.players))
-		r.broadcast()
+		r.noteIfOver()
+		e.reply <- nil // after the update, so the caller knows the room is done with this player
+		return
 
 	case evInput:
 		if _, ok := r.players[e.id]; !ok {
@@ -189,12 +212,14 @@ func (r *Room) broadcast() {
 	}
 }
 
-// noteIfOver logs the result once, when the game first becomes Over.
+// noteIfOver, when the game first becomes Over, logs the result and closes
+// the Over channel. It does nothing on later calls.
 func (r *Room) noteIfOver() {
-	if r.over || r.g.State() != game.StateOver {
+	if r.isOver || r.g.State() != game.StateOver {
 		return
 	}
-	r.over = true
+	r.isOver = true
 	out := r.g.Outcome()
 	r.log.Info("game over", "winner", out.Winner, "draw", out.Draw)
+	close(r.over)
 }

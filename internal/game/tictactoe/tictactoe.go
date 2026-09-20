@@ -62,6 +62,7 @@ const (
 // Room is its only caller.
 type Game struct {
 	seats   [2]game.PlayerID // seats[0] plays X, seats[1] plays O; 0 = empty seat
+	names   [2]string        // display name per seat
 	cells   [9]mark
 	turn    int // index into seats of the player to move
 	state   game.State
@@ -110,7 +111,7 @@ func (g *Game) clearNotices() {
 }
 
 // Join implements game.Game. The game starts when the second player joins.
-func (g *Game) Join(p game.PlayerID) error {
+func (g *Game) Join(p game.PlayerID, name string) error {
 	if g.state == game.StateOver {
 		return game.ErrOver
 	}
@@ -120,6 +121,7 @@ func (g *Game) Join(p game.PlayerID) error {
 	for i, id := range g.seats {
 		if id == 0 {
 			g.seats[i] = p
+			g.names[i] = name
 			g.clearNotices()
 			if g.seats[0] != 0 && g.seats[1] != 0 {
 				g.state = game.StateRunning
@@ -142,6 +144,7 @@ func (g *Game) Leave(p game.PlayerID) {
 	switch g.state {
 	case game.StateWaiting:
 		g.seats[seat] = 0
+		g.names[seat] = ""
 	case game.StateRunning:
 		g.state = game.StateOver
 		g.forfeit = true
@@ -234,10 +237,28 @@ func (g *Game) View(p game.PlayerID) *render.Canvas {
 	}
 
 	me := markFor(seat)
-	c.Text(boardX, 8, "You are "+string(me.rune()), me.color())
-	c.Text(boardX, 9, g.status(seat, p), render.Default)
-	c.Text(boardX, 10, g.notice[seat], render.Yellow)
+	you := "You are " + string(me.rune())
+	if name := g.names[seat]; name != "" {
+		you += " (" + name + ")"
+	}
+	c.Text(boardX, 8, you, me.color())
+	c.Text(boardX, 9, g.opponentLine(seat), render.Default)
+	c.Text(boardX, 10, g.status(seat, p), render.Default)
+	c.Text(boardX, 11, g.notice[seat], render.Yellow)
 	return c
+}
+
+// opponentLine describes who the player in seat is playing against.
+func (g *Game) opponentLine(seat int) string {
+	other := 1 - seat
+	if g.seats[other] == 0 {
+		return "Opponent: waiting..."
+	}
+	m := string(markFor(other).rune())
+	if name := g.names[other]; name != "" {
+		return "Opponent: " + name + " (" + m + ")"
+	}
+	return "Opponent: " + m
 }
 
 func (g *Game) drawBoard(c *render.Canvas) {

@@ -32,10 +32,10 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestRun_ServesTicTacToeAndStopsOnCancel wires everything together the way
+// TestRun_ServesTheLobbyAndStopsOnCancel wires everything together the way
 // main does: it starts run, plays the part of a client, then cancels the
 // context (which is what Ctrl-C does) and expects a clean stop.
-func TestRun_ServesTicTacToeAndStopsOnCancel(t *testing.T) {
+func TestRun_ServesTheLobbyAndStopsOnCancel(t *testing.T) {
 	const testTimeout = 5 * time.Second
 
 	var logs syncBuffer
@@ -68,10 +68,10 @@ func TestRun_ServesTicTacToeAndStopsOnCancel(t *testing.T) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(testTimeout))
 
-	// The first player to arrive is seated and told to wait for an opponent.
+	// A new player is greeted by the lobby and asked for a nickname.
 	var got []byte
 	tmp := make([]byte, 4096)
-	for !strings.Contains(string(got), "Waiting for an opponent") {
+	for !strings.Contains(string(got), "Choose a nickname") {
 		n, err := conn.Read(tmp)
 		got = append(got, tmp[:n]...)
 		if err != nil {

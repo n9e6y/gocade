@@ -13,6 +13,9 @@ import (
 const (
 	px game.PlayerID = 1 // joins first, plays X, moves first
 	po game.PlayerID = 2 // joins second, plays O
+
+	nameX = "bob"
+	nameO = "alice"
 )
 
 // winLines are the 8 winning lines, as cell numbers 1-9 (row-major).
@@ -54,10 +57,10 @@ func digit(n int) input.Key {
 func newStarted(t *testing.T) *Game {
 	t.Helper()
 	g := New()
-	if err := g.Join(px); err != nil {
+	if err := g.Join(px, nameX); err != nil {
 		t.Fatalf("Join(px): %v", err)
 	}
-	if err := g.Join(po); err != nil {
+	if err := g.Join(po, nameO); err != nil {
 		t.Fatalf("Join(po): %v", err)
 	}
 	return g
@@ -120,13 +123,13 @@ func TestStartsWhenSecondPlayerJoins(t *testing.T) {
 	t.Parallel()
 
 	g := New()
-	if err := g.Join(px); err != nil {
+	if err := g.Join(px, nameX); err != nil {
 		t.Fatal(err)
 	}
 	if g.State() != game.StateWaiting {
 		t.Fatalf("after one player State() = %v, want Waiting", g.State())
 	}
-	if err := g.Join(po); err != nil {
+	if err := g.Join(po, nameO); err != nil {
 		t.Fatal(err)
 	}
 	if g.State() != game.StateRunning {
@@ -328,7 +331,7 @@ func TestInputWhileWaitingIsIgnored(t *testing.T) {
 	t.Parallel()
 
 	g := New()
-	if err := g.Join(px); err != nil {
+	if err := g.Join(px, nameX); err != nil {
 		t.Fatal(err)
 	}
 	play(g, move{px, 5})
@@ -338,7 +341,7 @@ func TestInputWhileWaitingIsIgnored(t *testing.T) {
 	mustContain(t, screen(g, px), "Waiting for an opponent")
 
 	// The premature key must not have been remembered once play begins.
-	if err := g.Join(po); err != nil {
+	if err := g.Join(po, nameO); err != nil {
 		t.Fatal(err)
 	}
 	if g.cells != ([9]mark{}) {
@@ -376,8 +379,8 @@ func TestJoinErrors(t *testing.T) {
 	t.Run("duplicate while waiting", func(t *testing.T) {
 		t.Parallel()
 		g := New()
-		_ = g.Join(px)
-		if err := g.Join(px); !errors.Is(err, game.ErrAlreadyJoined) {
+		_ = g.Join(px, nameX)
+		if err := g.Join(px, nameX); !errors.Is(err, game.ErrAlreadyJoined) {
 			t.Errorf("err = %v, want ErrAlreadyJoined", err)
 		}
 	})
@@ -385,7 +388,7 @@ func TestJoinErrors(t *testing.T) {
 	t.Run("duplicate while running", func(t *testing.T) {
 		t.Parallel()
 		g := newStarted(t)
-		if err := g.Join(po); !errors.Is(err, game.ErrAlreadyJoined) {
+		if err := g.Join(po, nameO); !errors.Is(err, game.ErrAlreadyJoined) {
 			t.Errorf("err = %v, want ErrAlreadyJoined", err)
 		}
 	})
@@ -393,7 +396,7 @@ func TestJoinErrors(t *testing.T) {
 	t.Run("third player", func(t *testing.T) {
 		t.Parallel()
 		g := newStarted(t)
-		if err := g.Join(3); !errors.Is(err, game.ErrFull) {
+		if err := g.Join(3, "carol"); !errors.Is(err, game.ErrFull) {
 			t.Errorf("err = %v, want ErrFull", err)
 		}
 	})
@@ -402,7 +405,7 @@ func TestJoinErrors(t *testing.T) {
 		t.Parallel()
 		g := newStarted(t)
 		g.Leave(po) // forfeit ends the game
-		if err := g.Join(3); !errors.Is(err, game.ErrOver) {
+		if err := g.Join(3, "carol"); !errors.Is(err, game.ErrOver) {
 			t.Errorf("err = %v, want ErrOver", err)
 		}
 	})
@@ -431,15 +434,15 @@ func TestLeave(t *testing.T) {
 	t.Run("leaving while waiting frees the seat", func(t *testing.T) {
 		t.Parallel()
 		g := New()
-		_ = g.Join(px)
+		_ = g.Join(px, nameX)
 		g.Leave(px)
 		if g.State() != game.StateWaiting {
 			t.Fatalf("State() = %v, want Waiting", g.State())
 		}
-		if err := g.Join(3); err != nil {
+		if err := g.Join(3, "carol"); err != nil {
 			t.Fatalf("Join after seat freed: %v", err)
 		}
-		mustContain(t, screen(g, 3), "You are X")
+		mustContain(t, screen(g, 3), "You are X (carol)")
 	})
 
 	t.Run("leaving after over changes nothing", func(t *testing.T) {
@@ -517,6 +520,55 @@ func TestView(t *testing.T) {
 		}
 		if got := findInBoard(c, 'O'); got.Fg != render.Cyan {
 			t.Errorf("O color = %v, want Cyan", got.Fg)
+		}
+	})
+
+	t.Run("each player sees their own name and the opponent's", func(t *testing.T) {
+		t.Parallel()
+		g := newStarted(t)
+
+		x, o := screen(g, px), screen(g, po)
+		mustContain(t, x, "You are X (bob)")
+		mustContain(t, x, "Opponent: alice (O)")
+		mustContain(t, o, "You are O (alice)")
+		mustContain(t, o, "Opponent: bob (X)")
+	})
+
+	t.Run("a lone player sees that the opponent has not arrived", func(t *testing.T) {
+		t.Parallel()
+		g := New()
+		if err := g.Join(px, nameX); err != nil {
+			t.Fatal(err)
+		}
+
+		s := screen(g, px)
+		mustContain(t, s, "You are X (bob)")
+		mustContain(t, s, "Opponent: waiting...")
+	})
+
+	t.Run("an empty name shows no empty parentheses", func(t *testing.T) {
+		t.Parallel()
+		g := New()
+		if err := g.Join(px, ""); err != nil {
+			t.Fatal(err)
+		}
+
+		s := screen(g, px)
+		mustContain(t, s, "You are X")
+		if strings.Contains(s, "()") {
+			t.Errorf("screen shows empty parentheses:\n%s", s)
+		}
+	})
+
+	t.Run("a stranger sees no names", func(t *testing.T) {
+		t.Parallel()
+		g := newStarted(t)
+
+		s := screen(g, 99)
+		for _, name := range []string{nameX, nameO} {
+			if strings.Contains(s, name) {
+				t.Errorf("stranger's screen shows %q:\n%s", name, s)
+			}
 		}
 	})
 

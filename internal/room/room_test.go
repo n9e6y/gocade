@@ -29,6 +29,7 @@ type fakeGame struct {
 	state   game.State
 	version int // bumped on every change; drawn by View so frames differ
 	joined  []game.PlayerID
+	names   map[game.PlayerID]string // the name each player joined with
 	left    []game.PlayerID
 	inputs  []inputRec
 	ticks   int
@@ -45,11 +46,15 @@ func (f *fakeGame) TickEvery() time.Duration { return f.tickEvery }
 func (f *fakeGame) State() game.State        { return f.state }
 func (f *fakeGame) Outcome() game.Outcome    { return game.Outcome{} }
 
-func (f *fakeGame) Join(p game.PlayerID) error {
+func (f *fakeGame) Join(p game.PlayerID, name string) error {
 	if f.joinErr != nil {
 		return f.joinErr
 	}
 	f.joined = append(f.joined, p)
+	if f.names == nil {
+		f.names = make(map[game.PlayerID]string)
+	}
+	f.names[p] = name
 	f.state = game.StateRunning
 	f.version++
 	return nil
@@ -142,7 +147,7 @@ func TestJoin_SendsFrameToJoiner(t *testing.T) {
 	r := start(t, g, nil)
 	s := newSink()
 
-	if err := r.Join(1, s); err != nil {
+	if err := r.Join(1, "p1", s); err != nil {
 		t.Fatalf("Join: %v", err)
 	}
 	if got := recv(t, s); !strings.Contains(got, "p1 v1") {
@@ -153,6 +158,20 @@ func TestJoin_SendsFrameToJoiner(t *testing.T) {
 	}
 }
 
+func TestJoin_PassesTheNameToTheGame(t *testing.T) {
+	t.Parallel()
+
+	g := &fakeGame{}
+	r := start(t, g, nil)
+
+	if err := r.Join(7, "alice", newSink()); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	if got := g.names[7]; got != "alice" {
+		t.Errorf("game saw name %q for player 7, want %q", got, "alice")
+	}
+}
+
 func TestJoin_RejectedReturnsTheGameError(t *testing.T) {
 	t.Parallel()
 
@@ -160,7 +179,7 @@ func TestJoin_RejectedReturnsTheGameError(t *testing.T) {
 	r := start(t, g, nil)
 	s := newSink()
 
-	if err := r.Join(1, s); !errors.Is(err, game.ErrFull) {
+	if err := r.Join(1, "p1", s); !errors.Is(err, game.ErrFull) {
 		t.Fatalf("Join error = %v, want ErrFull", err)
 	}
 	if n := len(s.frames); n != 0 {
@@ -171,7 +190,7 @@ func TestJoin_RejectedReturnsTheGameError(t *testing.T) {
 	r.Input(1, keyRune('5'))
 	g.joinErr = nil // safe: the room is idle until the next event
 	other := newSink()
-	if err := r.Join(2, other); err != nil {
+	if err := r.Join(2, "p2", other); err != nil {
 		t.Fatalf("Join(2): %v", err)
 	}
 	recv(t, other)
@@ -186,10 +205,10 @@ func TestInput_ForwardedAndEveryoneGetsAFrame(t *testing.T) {
 	g := &fakeGame{}
 	r := start(t, g, nil)
 	a, b := newSink(), newSink()
-	if err := r.Join(1, a); err != nil {
+	if err := r.Join(1, "p1", a); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Join(2, b); err != nil {
+	if err := r.Join(2, "p2", b); err != nil {
 		t.Fatal(err)
 	}
 	recv(t, a) // join frame
@@ -218,7 +237,7 @@ func TestInput_FromNonMemberIsIgnored(t *testing.T) {
 	g := &fakeGame{}
 	r := start(t, g, nil)
 	s := newSink()
-	if err := r.Join(1, s); err != nil {
+	if err := r.Join(1, "p1", s); err != nil {
 		t.Fatal(err)
 	}
 	recv(t, s)
@@ -238,10 +257,10 @@ func TestLeave(t *testing.T) {
 	g := &fakeGame{}
 	r := start(t, g, nil)
 	leaver, stayer := newSink(), newSink()
-	if err := r.Join(1, leaver); err != nil {
+	if err := r.Join(1, "p1", leaver); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Join(2, stayer); err != nil {
+	if err := r.Join(2, "p2", stayer); err != nil {
 		t.Fatal(err)
 	}
 	recv(t, leaver)
@@ -270,7 +289,7 @@ func TestLeave_UnknownPlayerIsANoop(t *testing.T) {
 	g := &fakeGame{}
 	r := start(t, g, nil)
 	s := newSink()
-	if err := r.Join(1, s); err != nil {
+	if err := r.Join(1, "p1", s); err != nil {
 		t.Fatal(err)
 	}
 	recv(t, s)
@@ -284,6 +303,60 @@ func TestLeave_UnknownPlayerIsANoop(t *testing.T) {
 	}
 }
 
+// TestLeave_ReturnsOnlyAfterTheRoomProcessedIt: the lobby sends the menu right
+// after Leave returns, so if Leave returned early the room could still send a
+// stale game frame on top of the menu. Reading the game's records straight
+// after Leave, with no frame received in between, proves the wait (and the
+// race detector would flag it if Leave did not wait).
+func TestLeave_ReturnsOnlyAfterTheRoomProcessedIt(t *testing.T) {
+	t.Parallel()
+
+	g := &fakeGame{}
+	r := start(t, g, nil)
+	s := newSink()
+	if err := r.Join(1, "p1", s); err != nil {
+		t.Fatal(err)
+	}
+
+	r.Leave(1)
+	if len(g.left) != 1 || g.left[0] != 1 {
+		t.Errorf("game saw leaves %v right after Leave returned, want [1]", g.left)
+	}
+
+	r.Leave(99) // unknown player: must return, not hang
+}
+
+func TestOver_ClosesWhenTheGameEndsAndOnlyOnce(t *testing.T) {
+	t.Parallel()
+
+	g := &fakeGame{}
+	r := start(t, g, nil)
+	s := newSink()
+	if err := r.Join(1, "p1", s); err != nil {
+		t.Fatal(err)
+	}
+	recv(t, s)
+
+	select {
+	case <-r.Over():
+		t.Fatal("Over() closed before the game ended")
+	default:
+	}
+
+	r.Input(1, input.Key{Kind: input.KindEnter}) // ends the fake game
+	recv(t, s)
+	select {
+	case <-r.Over():
+	case <-time.After(testTimeout):
+		t.Fatal("Over() not closed after the game ended")
+	}
+
+	// More events after the end must not close the channel a second time.
+	r.Input(1, keyRune('x'))
+	recv(t, s)
+	r.Leave(1)
+}
+
 func TestTick_DrivesTheGameOncePerTick(t *testing.T) {
 	t.Parallel()
 
@@ -291,7 +364,7 @@ func TestTick_DrivesTheGameOncePerTick(t *testing.T) {
 	tick := make(chan time.Time) // unbuffered: a send returns once the room has taken the tick
 	r := start(t, g, tick)
 	s := newSink()
-	if err := r.Join(1, s); err != nil {
+	if err := r.Join(1, "p1", s); err != nil {
 		t.Fatal(err)
 	}
 	recv(t, s)
@@ -316,7 +389,7 @@ func TestTick_IgnoredUnlessRunning(t *testing.T) {
 	tick <- time.Time{}
 
 	s := newSink()
-	if err := r.Join(1, s); err != nil {
+	if err := r.Join(1, "p1", s); err != nil {
 		t.Fatal(err)
 	}
 	recv(t, s)
@@ -340,11 +413,11 @@ func TestSlowPlayerDoesNotBlockTheRoom(t *testing.T) {
 
 	g := &fakeGame{}
 	r := start(t, g, nil)
-	if err := r.Join(1, dropSink{}); err != nil { // its Send always reports a drop
+	if err := r.Join(1, "p1", dropSink{}); err != nil { // its Send always reports a drop
 		t.Fatal(err)
 	}
 	healthy := newSink()
-	if err := r.Join(2, healthy); err != nil {
+	if err := r.Join(2, "p2", healthy); err != nil {
 		t.Fatal(err)
 	}
 	recv(t, healthy)
@@ -376,7 +449,7 @@ func TestRun_StopsOnCancelAndLaterCallsDoNotBlock(t *testing.T) {
 	go func() {
 		r.Leave(1)
 		r.Input(1, keyRune('a'))
-		finished <- r.Join(1, newSink())
+		finished <- r.Join(1, "p1", newSink())
 	}()
 	select {
 	case err := <-finished:

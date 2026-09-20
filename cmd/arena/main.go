@@ -13,9 +13,9 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/n9e6y/gocade/internal/game"
 	"github.com/n9e6y/gocade/internal/game/tictactoe"
 	"github.com/n9e6y/gocade/internal/lobby"
-	"github.com/n9e6y/gocade/internal/room"
 	"github.com/n9e6y/gocade/internal/server"
 )
 
@@ -46,33 +46,36 @@ func run(ctx context.Context, out io.Writer, version, addr string, log *slog.Log
 		return fmt.Errorf("write version: %w", err)
 	}
 
+	// The games on offer. Adding a game to Arena is one new package plus one
+	// line here.
+	reg := lobby.NewRegistry()
+	if err := reg.Register("tictactoe", "Tic-Tac-Toe", func() game.Game { return tictactoe.New() }); err != nil {
+		return fmt.Errorf("register games: %w", err)
+	}
+
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %q: %w", addr, err)
 	}
 	log.Info("listening", "addr", ln.Addr().String())
 
-	// TEMPORARY until the lobby (Stage 4): one room, one Tic-Tac-Toe game.
-	g := tictactoe.New()
-	tick, stopTicker := room.TickerFor(g) // nil for a turn-based game
-	defer stopTicker()
-	handler := lobby.NewSingleRoom(g, tick, log)
+	handler := lobby.New(reg, log)
 	srv := server.New(ln, handler, log)
 
-	// run owns the room goroutine: it starts it here and stops it below by
-	// cancelling roomCtx. The room is stopped after the server, so it is
+	// run owns the lobby goroutine: it starts it here and stops it below by
+	// cancelling lobbyCtx. The lobby is stopped after the server, so it is
 	// still there to hear about every player leaving during shutdown.
-	roomCtx, stopRoom := context.WithCancel(context.Background())
-	defer stopRoom()
+	lobbyCtx, stopLobby := context.WithCancel(context.Background())
+	defer stopLobby()
 	var wg sync.WaitGroup
 	wg.Add(1) // before go, never inside the goroutine
 	go func() {
 		defer wg.Done()
-		handler.Run(roomCtx)
+		handler.Run(lobbyCtx)
 	}()
 
 	err = srv.Run(ctx)
-	stopRoom()
+	stopLobby()
 	wg.Wait()
 	if err != nil {
 		return fmt.Errorf("run server: %w", err)

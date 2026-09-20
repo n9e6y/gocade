@@ -69,8 +69,10 @@ type Game interface {
 	// turn-based and needs no ticker.
 	TickEvery() time.Duration
 
-	// Join seats a player. When the last seat fills, the game starts.
-	Join(p PlayerID) error
+	// Join seats a player. name is what other players see; it is for
+	// display only, and identity stays the PlayerID. When the last seat
+	// fills, the game starts.
+	Join(p PlayerID, name string) error
 
 	// Leave removes a player. Mid-game this forfeits for that player.
 	Leave(p PlayerID)
