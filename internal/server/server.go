@@ -1,9 +1,9 @@
 // Package server accepts TCP connections and runs one Session (a reader and a
-// writer goroutine) per client.
+// writer goroutine) per client. What happens to the bytes is decided by a
+// Handler, so the server itself knows nothing about games.
 package server
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +12,8 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+
+	"github.com/n9e6y/gocade/internal/input"
 )
 
 const (
@@ -20,23 +22,46 @@ const (
 	outBuffer = 16
 	// readBuffer is the size of each session's read buffer.
 	readBuffer = 512
-	// greeting is sent to every player on connect.
-	greeting = "Welcome to Arena. Type anything and it is echoed back; q quits.\r\n"
 )
+
+// Handler decides what a connection means. The server calls it from the
+// session's reader goroutine, so for one session the calls are serial: a
+// session's OnConnect finishes before its first OnKeys, and OnDisconnect
+// comes last. Calls for different sessions run concurrently, so a Handler
+// must be safe for that.
+//
+// A Handler must not block for long: while it runs, that session's reader is
+// not reading.
+type Handler interface {
+	// OnConnect is called once when the session starts. The session is ready
+	// for Send.
+	OnConnect(s *Session)
+
+	// OnKeys is called with each batch of keys decoded from the client. The
+	// slice is the handler's to keep.
+	OnKeys(s *Session, keys []input.Key)
+
+	// OnDisconnect is called exactly once, after the session has stopped,
+	// however it ended: the client left, the handler called Close, or the
+	// server shut down.
+	OnDisconnect(s *Session)
+}
 
 // Server accepts connections from a listener and runs a session for each.
 type Server struct {
 	ln      net.Listener
+	handler Handler
 	log     *slog.Logger
 	wg      sync.WaitGroup // tracks one serve goroutine per connection
 	nextID  atomic.Uint64
 	dropped atomic.Uint64 // frames dropped across all sessions
 }
 
-// New returns a Server that will accept connections from ln. The caller
-// creates the listener so it controls the address (tests use 127.0.0.1:0).
-func New(ln net.Listener, log *slog.Logger) *Server {
-	return &Server{ln: ln, log: log}
+// New returns a Server that will accept connections from ln and give each to
+// h. The caller creates the listener so it controls the address (tests use
+// 127.0.0.1:0).
+func New(ln net.Listener, h Handler, log *slog.Logger) *Server {
+	return &Server{ln: ln, handler: h, log: log}
 }
 
 // Dropped returns the number of frames dropped so far because a client was
@@ -87,15 +112,16 @@ func (s *Server) acceptLoop(ctx context.Context) error {
 }
 
 // serve runs one session on conn: it is the reader, and it starts and owns
-// the writer goroutine. It returns when the client disconnects, the player
-// quits, the writer fails, or ctx is cancelled, and it does not return until
-// the writer has exited.
+// the writer goroutine. It returns when the client disconnects, the handler
+// closes the session, the writer fails, or ctx is cancelled, and it does not
+// return until the writer has exited and the handler has been told.
 func (s *Server) serve(ctx context.Context, conn net.Conn) {
+	sctx, cancel := context.WithCancel(ctx)
+
 	sess := newSession(s.nextID.Add(1), conn, outBuffer, &s.dropped)
+	sess.cancel = cancel
 	log := s.log.With("session", sess.id)
 	log.Debug("connected", "remote", conn.RemoteAddr())
-
-	sctx, cancel := context.WithCancel(ctx)
 
 	// A blocked Read or Write cannot see ctx, but closing the conn makes it
 	// fail. This closes the conn whenever sctx ends, for any reason.
@@ -114,16 +140,22 @@ func (s *Server) serve(ctx context.Context, conn net.Conn) {
 		cancel()
 		conn.Close()
 		writer.Wait()
+		s.handler.OnDisconnect(sess)
 		log.Debug("disconnected")
 	}()
 
-	sess.Send([]byte(greeting))
+	s.handler.OnConnect(sess)
 
+	// Each session has its own decoder: it remembers half-received escape
+	// sequences, which belong to this client alone.
+	var dec input.Decoder
 	buf := make([]byte, readBuffer)
 	for {
 		n, err := conn.Read(buf)
-		if n > 0 && handleInput(sess, buf[:n]) {
-			return
+		if n > 0 {
+			if keys := dec.Feed(buf[:n]); len(keys) > 0 {
+				s.handler.OnKeys(sess, keys)
+			}
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
@@ -132,18 +164,4 @@ func (s *Server) serve(ctx context.Context, conn net.Conn) {
 			return
 		}
 	}
-}
-
-// handleInput is TEMPORARY Stage 1 behavior: echo the bytes back and report
-// whether the player asked to quit. Stage 2 replaces it with a key decoder.
-// p is only valid during the call, so the echo is a copy.
-func handleInput(sess *Session, p []byte) (quit bool) {
-	if i := bytes.IndexByte(p, 'q'); i >= 0 {
-		p = p[:i]
-		quit = true
-	}
-	if len(p) > 0 {
-		sess.Send(bytes.Clone(p))
-	}
-	return quit
 }

@@ -12,7 +12,8 @@ type Session struct {
 	id      uint64
 	conn    net.Conn
 	out     chan []byte
-	dropped *atomic.Uint64 // server-wide drop counter, shared by all sessions
+	dropped *atomic.Uint64     // server-wide drop counter, shared by all sessions
+	cancel  context.CancelFunc // ends the session; set by Server.serve
 }
 
 // newSession returns a session whose out channel holds up to outBuf frames.
@@ -22,6 +23,20 @@ func newSession(id uint64, conn net.Conn, outBuf int, dropped *atomic.Uint64) *S
 		conn:    conn,
 		out:     make(chan []byte, outBuf),
 		dropped: dropped,
+	}
+}
+
+// ID returns the session's identifier, unique within its server and never
+// zero.
+func (s *Session) ID() uint64 { return s.id }
+
+// Close ends the session: the connection is closed and the reader and writer
+// goroutines stop. It is safe to call more than once and from any goroutine.
+// Frames still queued in out may be lost, so a message sent just before
+// Close is not guaranteed to arrive.
+func (s *Session) Close() {
+	if s.cancel != nil {
+		s.cancel()
 	}
 }
 

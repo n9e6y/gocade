@@ -38,7 +38,3 @@ go.work.sum
 STAGES.md
 CLAUDE.md
 /docs/decisions.md
-
-
-# Test data
-/internal/render/testdata

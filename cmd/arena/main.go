@@ -10,8 +10,12 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
+	"github.com/n9e6y/gocade/internal/game/tictactoe"
+	"github.com/n9e6y/gocade/internal/lobby"
+	"github.com/n9e6y/gocade/internal/room"
 	"github.com/n9e6y/gocade/internal/server"
 )
 
@@ -48,7 +52,29 @@ func run(ctx context.Context, out io.Writer, version, addr string, log *slog.Log
 	}
 	log.Info("listening", "addr", ln.Addr().String())
 
-	if err := server.New(ln, log).Run(ctx); err != nil {
+	// TEMPORARY until the lobby (Stage 4): one room, one Tic-Tac-Toe game.
+	g := tictactoe.New()
+	tick, stopTicker := room.TickerFor(g) // nil for a turn-based game
+	defer stopTicker()
+	handler := lobby.NewSingleRoom(g, tick, log)
+	srv := server.New(ln, handler, log)
+
+	// run owns the room goroutine: it starts it here and stops it below by
+	// cancelling roomCtx. The room is stopped after the server, so it is
+	// still there to hear about every player leaving during shutdown.
+	roomCtx, stopRoom := context.WithCancel(context.Background())
+	defer stopRoom()
+	var wg sync.WaitGroup
+	wg.Add(1) // before go, never inside the goroutine
+	go func() {
+		defer wg.Done()
+		handler.Run(roomCtx)
+	}()
+
+	err = srv.Run(ctx)
+	stopRoom()
+	wg.Wait()
+	if err != nil {
 		return fmt.Errorf("run server: %w", err)
 	}
 	return nil

@@ -143,6 +143,7 @@ func TestCanvas_Frame_Exact(t *testing.T) {
 
 	const head = "\x1b[?25l\x1b[H" // hide cursor, cursor home
 	const tail = "\x1b[J"          // clear whatever an older, larger frame left below
+	const eol = "\x1b[K"           // erase the rest of the line, so nothing stale shows to the right
 
 	tests := []struct {
 		name  string
@@ -157,7 +158,7 @@ func TestCanvas_Frame_Exact(t *testing.T) {
 		{
 			name:  "blank cells render as spaces",
 			build: func() *Canvas { return NewCanvas(2, 1) },
-			want:  head + "  " + tail,
+			want:  head + "  " + eol + tail,
 		},
 		{
 			name: "style is emitted only when it changes",
@@ -168,7 +169,7 @@ func TestCanvas_Frame_Exact(t *testing.T) {
 				c.Set(2, 0, Cell{Rune: 'c'})
 				return c
 			},
-			want: head + "\x1b[0;31mab" + "\x1b[0mc" + tail,
+			want: head + "\x1b[0;31mab" + "\x1b[0mc" + eol + tail,
 		},
 		{
 			name: "foreground and background",
@@ -179,7 +180,7 @@ func TestCanvas_Frame_Exact(t *testing.T) {
 			},
 			// Black is ANSI 30 and White is background 47. The row ends
 			// styled, so it is reset before the frame ends.
-			want: head + "\x1b[0;30;47m@" + "\x1b[0m" + tail,
+			want: head + "\x1b[0;30;47m@" + "\x1b[0m" + eol + tail,
 		},
 		{
 			name: "rows are separated by CRLF and styles reset at row end",
@@ -189,7 +190,7 @@ func TestCanvas_Frame_Exact(t *testing.T) {
 				c.Set(0, 1, Cell{Rune: 'y', Fg: Green})
 				return c
 			},
-			want: head + "\x1b[0;32mx\x1b[0m\r\n" + "\x1b[0;32my\x1b[0m" + tail,
+			want: head + "\x1b[0;32mx\x1b[0m" + eol + "\r\n" + "\x1b[0;32my\x1b[0m" + eol + tail,
 		},
 		{
 			name: "control runes are drawn as spaces so players cannot inject escapes",
@@ -200,7 +201,7 @@ func TestCanvas_Frame_Exact(t *testing.T) {
 				c.Set(2, 0, Cell{Rune: '\x7f'})
 				return c
 			},
-			want: head + "   " + tail,
+			want: head + "   " + eol + tail,
 		},
 		{
 			name: "unknown color falls back to default",
@@ -209,7 +210,7 @@ func TestCanvas_Frame_Exact(t *testing.T) {
 				c.Set(0, 0, Cell{Rune: 'z', Fg: Color(200)})
 				return c
 			},
-			want: head + "z" + tail,
+			want: head + "z" + eol + tail,
 		},
 		{
 			name: "multi-byte runes are written as UTF-8",
@@ -218,7 +219,7 @@ func TestCanvas_Frame_Exact(t *testing.T) {
 				c.Set(0, 0, Cell{Rune: '█'})
 				return c
 			},
-			want: head + "█" + tail,
+			want: head + "█" + eol + tail,
 		},
 	}
 

@@ -100,6 +100,7 @@ const (
 	cursorHome = "\x1b[H"
 	resetStyle = "\x1b[0m"
 	clearBelow = "\x1b[J"
+	eraseLine  = "\x1b[K"
 )
 
 // style is the colors of a cell, with invalid colors already normalized.
@@ -137,7 +138,10 @@ func appendSGR(b []byte, s style) []byte {
 // there is no flicker.
 //
 // A style escape is written only when the style changes, and every row ends
-// in the default style so colors never bleed past the line.
+// in the default style so colors never bleed past the line. Each row is then
+// followed by an erase-to-end-of-line, so text already on the terminal to the
+// right of the canvas (such as the shell prompt above a first frame) is
+// wiped instead of left showing.
 //
 // Control characters (including ESC) are drawn as spaces. Text on a canvas
 // can come from other players, and it must not be able to send escape codes
@@ -167,6 +171,7 @@ func (c *Canvas) Frame() []byte {
 			b = append(b, resetStyle...)
 			cur = style{}
 		}
+		b = append(b, eraseLine...) // wipe whatever was on the terminal to the right of the canvas
 		if y < c.h-1 {
 			b = append(b, "\r\n"...)
 		}

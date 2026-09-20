@@ -5,6 +5,26 @@ import (
 	"testing"
 )
 
+func TestSession_IDAndClose(t *testing.T) {
+	t.Parallel()
+
+	var dropped atomic.Uint64
+	s := newSession(7, nil, 1, &dropped)
+	if s.ID() != 7 {
+		t.Errorf("ID() = %d, want 7", s.ID())
+	}
+
+	s.Close() // no cancel func yet: must not panic
+
+	calls := 0
+	s.cancel = func() { calls++ }
+	s.Close()
+	s.Close() // idempotent from the caller's point of view: cancel may be called repeatedly
+	if calls != 2 {
+		t.Errorf("cancel called %d times, want 2 (context cancel funcs are safe to repeat)", calls)
+	}
+}
+
 func TestSessionSend_DropsWhenFull(t *testing.T) {
 	t.Parallel()
 
