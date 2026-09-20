@@ -35,3 +35,4 @@ go.work.sum
 # Claude
 STAGES.md
 CLAUDE.md
+/docs/decisions.md
