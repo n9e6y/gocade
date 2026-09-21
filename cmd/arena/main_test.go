@@ -44,7 +44,7 @@ func TestRun_ServesTheLobbyAndStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, io.Discard, "dev", "127.0.0.1:0", log) }()
+	go func() { done <- run(ctx, io.Discard, "dev", config{addr: "127.0.0.1:0"}, log) }()
 
 	// run logs the address it is listening on; use that to find the port.
 	listening := regexp.MustCompile(`msg=listening addr=(\S+)`)
@@ -130,7 +130,7 @@ func TestRun(t *testing.T) {
 			var out bytes.Buffer
 			log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-			err := run(ctx, &out, tt.version, tt.addr, log)
+			err := run(ctx, &out, tt.version, config{addr: tt.addr}, log)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("run() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -138,5 +138,71 @@ func TestRun(t *testing.T) {
 				t.Errorf("run() output = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// startRun starts run with cfg and returns the address it listens on. The
+// server is stopped, and must stop cleanly, when the test ends.
+func startRun(t *testing.T, cfg config) string {
+	t.Helper()
+	const testTimeout = 5 * time.Second
+
+	var logs syncBuffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, io.Discard, "dev", cfg, log) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("run returned %v after cancel", err)
+			}
+		case <-time.After(testTimeout):
+			t.Error("run did not return after cancel")
+		}
+	})
+
+	listening := regexp.MustCompile(`msg=listening addr=(\S+)`)
+	deadline := time.Now().Add(testTimeout)
+	for {
+		if m := listening.FindStringSubmatch(logs.String()); m != nil {
+			return m[1]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server never logged its address; logs:\n%s", logs.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestRun_AppliesTheLimits checks that the flags reach the server: with room for
+// one connection, the second is turned away.
+func TestRun_AppliesTheLimits(t *testing.T) {
+	t.Parallel()
+
+	addr := startRun(t, config{addr: "127.0.0.1:0", maxConns: 1})
+
+	first, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	first.SetDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 4096)
+	if _, err := first.Read(buf); err != nil { // the nickname prompt: the server has accepted us
+		t.Fatalf("first client: %v", err)
+	}
+
+	second, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	second.SetDeadline(time.Now().Add(5 * time.Second))
+	msg, err := io.ReadAll(second)
+	if err != nil || !strings.Contains(string(msg), "full") {
+		t.Errorf("second client got %q, %v; want a message saying the server is full", msg, err)
 	}
 }

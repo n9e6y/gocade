@@ -203,9 +203,13 @@ func markFor(seat int) mark {
 	return markO
 }
 
-func (g *Game) hasWon(m mark) bool {
+func (g *Game) hasWon(m mark) bool { return won(&g.cells, m) }
+
+// won reports whether m holds a whole line of cells. It works on a bare
+// board so the bot can look at positions that are not the game's own.
+func won(cells *[9]mark, m mark) bool {
 	for _, l := range lines {
-		if g.cells[l[0]] == m && g.cells[l[1]] == m && g.cells[l[2]] == m {
+		if cells[l[0]] == m && cells[l[1]] == m && cells[l[2]] == m {
 			return true
 		}
 	}

@@ -120,11 +120,13 @@ func fakeRegistry(t *testing.T) *Registry {
 	return reg
 }
 
-// ticTacToeRegistry offers the real game as menu choice 1.
+// ticTacToeRegistry offers the real game as menu choice 1, without a bot, so
+// picking it joins a room straight away. These tests are about matchmaking
+// between people; bot_test.go covers the bot.
 func ticTacToeRegistry(t *testing.T) *Registry {
 	t.Helper()
 	reg := NewRegistry()
-	err := reg.Register("tictactoe", "Tic-Tac-Toe", func() game.Game { return tictactoe.New() })
+	err := reg.Register("tictactoe", "Tic-Tac-Toe", func() game.Game { return noBot{tictactoe.New()} })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,9 +251,9 @@ func named(t *testing.T, l *Lobby, name string) *testPlayer {
 }
 
 // startLobby runs a Lobby and stops it when the test ends.
-func startLobby(t *testing.T, reg *Registry) *Lobby {
+func startLobby(t *testing.T, reg *Registry, opts ...Option) *Lobby {
 	t.Helper()
-	l := New(reg, discardLogger())
+	l := New(reg, discardLogger(), opts...)
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {

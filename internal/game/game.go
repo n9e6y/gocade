@@ -57,6 +57,18 @@ var (
 	ErrStarted       = errors.New("game already started")
 )
 
+// Advisor is implemented by games that can play a seat themselves. A Room
+// uses it to run a bot: after every change it asks each bot's seat what to
+// press, and feeds the answer to Game.Input, exactly as a human's key would
+// arrive.
+//
+// Advise is pure: the same state always gives the same key. It returns false
+// when p has nothing to do, such as when it is not p's turn or the game is
+// not running.
+type Advisor interface {
+	Advise(p PlayerID) (input.Key, bool)
+}
+
 // Game is the rules of one game, as seen by a Room. A Game is only ever used
 // by one goroutine (its Room's), so implementations need no locking.
 type Game interface {

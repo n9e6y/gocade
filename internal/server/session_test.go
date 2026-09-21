@@ -1,6 +1,8 @@
 package server
 
 import (
+	"fmt"
+	"slices"
 	"sync/atomic"
 	"testing"
 )
@@ -25,7 +27,10 @@ func TestSession_IDAndClose(t *testing.T) {
 	}
 }
 
-func TestSessionSend_DropsWhenFull(t *testing.T) {
+// When the buffer is full, Send makes room by discarding the oldest queued
+// frame, so the newest frame (which is a complete picture of the game, and may
+// be the final result) is always the one that survives.
+func TestSessionSend_WhenFullTheOldestFrameIsDiscarded(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -34,10 +39,11 @@ func TestSessionSend_DropsWhenFull(t *testing.T) {
 		sends        int
 		wantAccepted int
 		wantDropped  uint64
+		wantQueue    []string // what is left in the buffer, oldest first
 	}{
-		{name: "room for all", buf: 3, sends: 3, wantAccepted: 3, wantDropped: 0},
-		{name: "one slot", buf: 1, sends: 3, wantAccepted: 1, wantDropped: 2},
-		{name: "overflow", buf: 3, sends: 5, wantAccepted: 3, wantDropped: 2},
+		{name: "room for all", buf: 3, sends: 3, wantAccepted: 3, wantDropped: 0, wantQueue: []string{"f1", "f2", "f3"}},
+		{name: "one slot keeps only the newest", buf: 1, sends: 3, wantAccepted: 3, wantDropped: 2, wantQueue: []string{"f3"}},
+		{name: "overflow keeps the newest few", buf: 3, sends: 5, wantAccepted: 5, wantDropped: 2, wantQueue: []string{"f3", "f4", "f5"}},
 		{name: "unbuffered never accepts without a reader", buf: 0, sends: 2, wantAccepted: 0, wantDropped: 2},
 	}
 
@@ -50,8 +56,8 @@ func TestSessionSend_DropsWhenFull(t *testing.T) {
 			s := newSession(1, nil, tt.buf, &dropped)
 
 			accepted := 0
-			for i := 0; i < tt.sends; i++ {
-				if s.Send([]byte("frame")) {
+			for i := 1; i <= tt.sends; i++ {
+				if s.Send([]byte(fmt.Sprintf("f%d", i))) {
 					accepted++
 				}
 			}
@@ -61,6 +67,13 @@ func TestSessionSend_DropsWhenFull(t *testing.T) {
 			}
 			if got := dropped.Load(); got != tt.wantDropped {
 				t.Errorf("dropped = %d, want %d", got, tt.wantDropped)
+			}
+			var queue []string
+			for len(s.out) > 0 {
+				queue = append(queue, string(<-s.out))
+			}
+			if !slices.Equal(queue, tt.wantQueue) {
+				t.Errorf("queue = %v, want %v", queue, tt.wantQueue)
 			}
 		})
 	}

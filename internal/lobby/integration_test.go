@@ -235,3 +235,22 @@ func TestArena_TerminalKeysWork(t *testing.T) {
 	c.press("\r")
 	c.expect("Hello, bob!")
 }
+
+// TestArena_PlayingTheBotOverTCP is the one-terminal demo over a real
+// connection: pick a game, pick "vs bot", and a game starts with nobody else
+// connected.
+func TestArena_PlayingTheBotOverTCP(t *testing.T) {
+	t.Parallel()
+
+	addr := startArenaWith(t, ticTacToeBotsRegistry(t))
+	ann := join(t, addr, "ann")
+	ann.press("1")
+	ann.expect("2) Play vs bot")
+	ann.press("2")
+	ann.expect("Opponent: Bot (O)")
+	ann.expect("Your turn")
+
+	ann.press("5")
+	ann.expect("O | 2 | 3") // the bot answered in the corner
+	ann.expect("Your turn")
+}

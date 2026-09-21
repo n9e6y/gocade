@@ -96,14 +96,14 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 
 // startServer runs a Server on 127.0.0.1:0. cancel stops it; done yields
 // Run's result. The server is also stopped when the test ends.
-func startServer(t *testing.T, h Handler) (srv *Server, addr string, cancel context.CancelFunc, done <-chan error) {
+func startServer(t *testing.T, h Handler, opts ...Option) (srv *Server, addr string, cancel context.CancelFunc, done <-chan error) {
 	t.Helper()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv = New(ln, h, discardLogger())
+	srv = New(ln, h, discardLogger(), opts...)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan error, 1)

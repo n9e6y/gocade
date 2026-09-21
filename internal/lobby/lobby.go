@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/n9e6y/gocade/internal/game"
 	"github.com/n9e6y/gocade/internal/input"
@@ -33,7 +34,7 @@ var (
 // real implementation; tests use a fake.
 type Conn interface {
 	ID() uint64
-	Send(frame []byte) bool // never blocks; reports false if the frame was dropped
+	Send(frame []byte) bool // never blocks; reports false if the frame could not be queued
 	Close()
 }
 
@@ -41,6 +42,7 @@ type Conn interface {
 type Stats struct {
 	Players int // connected players, whatever screen they are on
 	Rooms   int // open rooms, waiting or playing
+	Bots    int // computer players seated in those rooms
 }
 
 // playerState is which screen a player is on.
@@ -51,7 +53,18 @@ const (
 	stateMenu                        // choosing a game
 	stateInRoom                      // in a room, waiting or playing
 	stateResult                      // game over; result on screen until Enter
+	stateMode                        // chose a game that has a bot; choosing online or vs bot
 )
+
+// botIDBase is where the ids of bots start. Session ids count up from 1, so a
+// bot id can never equal a player's.
+const botIDBase game.PlayerID = 1 << 62
+
+// botName is what a bot is called on screen.
+const botName = "Bot"
+
+// crashNotice is shown on the menu to players whose game crashed.
+const crashNotice = "That game crashed. Sorry! Pick another."
 
 // player is the lobby's record of one connection. Only the lobby goroutine
 // touches it.
@@ -61,6 +74,7 @@ type player struct {
 	state   playerState
 	editor  nameEditor // the nickname being typed (stateNickname)
 	name    string     // the finished nickname
+	pick    Entry      // the game being set up (stateMode)
 	room    *roomEntry // set only in stateInRoom
 	closing bool       // Close has been called; ignore further keys
 }
@@ -72,9 +86,18 @@ type roomEntry struct {
 	game    Entry
 	room    *room.Room
 	cancel  context.CancelFunc // stops the room's goroutines
-	members []game.PlayerID    // in join order
-	max     int                // seats; the room is full at this many members
+	members []game.PlayerID    // the humans, in join order (bots are only counted, in bots)
+	bots    int                // computer players seated in the room
+	min     int                // players the game needs to start
+	max     int                // seats; the room is full at this many players
+	private bool               // a vs-bot room: never on the waiting list
 	closed  bool
+
+	// The fill timer (see syncFill): stopFill is non-nil while one is running,
+	// and fillSeq numbers them, so a late message from a timer that has since
+	// been stopped can be recognized and ignored.
+	stopFill func() bool
+	fillSeq  int
 }
 
 type eventKind uint8
@@ -85,6 +108,8 @@ const (
 	evDisconnect
 	evRoomOver
 	evStats
+	evFill
+	evRoomCrashed
 )
 
 // event is one message to the lobby goroutine.
@@ -92,7 +117,8 @@ type event struct {
 	kind  eventKind
 	conn  Conn        // evConnect, evKeys, evDisconnect
 	keys  []input.Key // evKeys
-	rm    *roomEntry  // evRoomOver
+	rm    *roomEntry  // evRoomOver, evFill, evRoomCrashed
+	seq   int         // evFill: which of the room's timers fired
 	stats chan Stats  // evStats: buffered, so the lobby never waits for the caller
 }
 
@@ -110,12 +136,41 @@ type Lobby struct {
 	players map[uint64]*player
 	rooms   map[*roomEntry]struct{}
 	waiting map[string][]*roomEntry // per game name, oldest first: rooms that still have a free seat
+	lastBot game.PlayerID           // the last bot id handed out; ids count up from botIDBase
+
+	fillWait time.Duration // how long a lone player waits before a bot joins; 0 means never
+	after    afterFunc     // starts the fill timers; time.AfterFunc unless a test replaces it
+}
+
+// afterFunc runs f in its own goroutine after d, and returns a function that
+// stops it (reporting whether it stopped it in time). It has the shape of
+// time.AfterFunc, and is injected so tests can fire timers by hand instead of
+// waiting.
+type afterFunc func(d time.Duration, f func()) (stop func() bool)
+
+func realAfter(d time.Duration, f func()) func() bool {
+	return time.AfterFunc(d, f).Stop
+}
+
+// Option changes how a Lobby behaves. See WithFillWait.
+type Option func(*Lobby)
+
+// WithFillWait makes the lobby add a bot to a player who has waited alone in
+// an online room of a game that has a bot for this long. Zero (the default)
+// turns it off.
+func WithFillWait(d time.Duration) Option {
+	return func(l *Lobby) { l.fillWait = d }
+}
+
+// withAfterFunc replaces the timer, for tests.
+func withAfterFunc(f afterFunc) Option {
+	return func(l *Lobby) { l.after = f }
 }
 
 // New returns a Lobby offering the games in reg. The registry must not be
 // changed once the lobby is running.
-func New(reg *Registry, log *slog.Logger) *Lobby {
-	return &Lobby{
+func New(reg *Registry, log *slog.Logger, opts ...Option) *Lobby {
+	l := &Lobby{
 		reg:     reg,
 		log:     log,
 		events:  make(chan event, eventBuffer),
@@ -123,7 +178,12 @@ func New(reg *Registry, log *slog.Logger) *Lobby {
 		players: make(map[uint64]*player),
 		rooms:   make(map[*roomEntry]struct{}),
 		waiting: make(map[string][]*roomEntry),
+		after:   realAfter,
 	}
+	for _, opt := range opts {
+		opt(l)
+	}
+	return l
 }
 
 // Run is the lobby goroutine. It handles events until ctx is cancelled, then
@@ -222,8 +282,18 @@ func (l *Lobby) handle(e event) {
 	case evRoomOver:
 		l.roomOver(e.rm)
 
+	case evRoomCrashed:
+		l.roomCrashed(e.rm)
+
+	case evFill:
+		l.fill(e.rm, e.seq)
+
 	case evStats:
-		e.stats <- Stats{Players: len(l.players), Rooms: len(l.rooms)}
+		bots := 0
+		for re := range l.rooms {
+			bots += re.bots
+		}
+		e.stats <- Stats{Players: len(l.players), Rooms: len(l.rooms), Bots: bots}
 	}
 }
 
@@ -258,7 +328,18 @@ func (l *Lobby) key(p *player, k input.Key) {
 		}
 		games := l.reg.Entries()
 		if n, ok := k.Digit(); ok && n >= 1 && n <= len(games) {
-			l.join(p, games[n-1])
+			l.pick(p, games[n-1])
+		}
+
+	case stateMode:
+		n, isDigit := k.Digit()
+		switch {
+		case isDigit && n == 1:
+			l.join(p, p.pick)
+		case isDigit && n == 2:
+			l.joinBot(p, p.pick)
+		case k.IsQuit() || (k.Kind == input.KindRune && (k.Rune == 'b' || k.Rune == 'B')):
+			l.showMenu(p, "") // q means "back" here; on the menu itself it quits
 		}
 
 	case stateInRoom:
@@ -283,6 +364,101 @@ func (l *Lobby) showMenu(p *player, notice string) {
 	p.conn.Send(menuFrame(p.name, l.reg.Entries(), notice))
 }
 
+// pick handles the choice of a game on the menu. A game with a bot asks how to
+// play; any other game goes straight to an online room.
+func (l *Lobby) pick(p *player, g Entry) {
+	if !g.Bots {
+		l.join(p, g)
+		return
+	}
+	p.pick = g
+	p.state = stateMode
+	p.conn.Send(modeFrame(g.Title, ""))
+}
+
+// joinBot starts a game for p against computer players. The room is private:
+// it is never offered to anyone else, so p plays alone against the bot. Bots
+// are seated until the game has the players it needs, so it starts at once.
+func (l *Lobby) joinBot(p *player, g Entry) {
+	re := l.newRoom(g, true)
+	if err := re.room.Join(p.id, p.name, p.conn); err != nil {
+		l.log.Warn("could not join room", "player", p.id, "game", g.Name, "err", err)
+		l.closeRoom(re)
+		l.showMenu(p, "Could not start that game. Try again.")
+		return
+	}
+	p.state = stateInRoom
+	p.room = re
+	re.members = append(re.members, p.id)
+
+	for len(re.members)+re.bots < re.min {
+		if err := l.addBot(re); err != nil {
+			l.log.Warn("could not seat a bot", "player", p.id, "game", g.Name, "err", err)
+			l.leaveRoom(p) // the room has no humans left, so it closes
+			l.showMenu(p, "Could not start that game. Try again.")
+			return
+		}
+	}
+}
+
+// syncFill makes a room's fill timer match its situation. A public room of a
+// game with a bot, holding exactly one human and no bot, has a timer running;
+// any other room has none. It is called whenever that situation may have
+// changed: someone joined, someone left, the room closed.
+func (l *Lobby) syncFill(re *roomEntry) {
+	want := l.fillWait > 0 && re.game.Bots && !re.private && !re.closed &&
+		len(re.members) == 1 && re.bots == 0
+
+	switch {
+	case want && re.stopFill == nil:
+		re.fillSeq++
+		seq := re.fillSeq
+		// The callback runs on a timer goroutine, which ends as soon as post
+		// returns, and post always returns: the event is queued, or the lobby
+		// has stopped.
+		re.stopFill = l.after(l.fillWait, func() {
+			l.post(event{kind: evFill, rm: re, seq: seq})
+		})
+	case !want && re.stopFill != nil:
+		re.stopFill()
+		re.stopFill = nil
+	}
+}
+
+// fill is the fill timer firing: a bot joins the player who has been waiting
+// alone. seq says which timer it was. A timer that was stopped just as it
+// fired may still get here, so everything is checked again, and a message from
+// an old timer is ignored.
+func (l *Lobby) fill(re *roomEntry, seq int) {
+	if re.closed || re.stopFill == nil || seq != re.fillSeq {
+		return
+	}
+	re.stopFill = nil // this timer has done its job
+
+	if len(re.members) != 1 || re.bots != 0 {
+		return
+	}
+	if err := l.addBot(re); err != nil {
+		l.log.Debug("could not fill the room with a bot", "game", re.game.Name, "err", err)
+		return
+	}
+	l.log.Info("a bot joined a waiting player", "game", re.game.Name, "player", re.members[0])
+	if len(re.members)+re.bots >= re.max {
+		l.removeWaiting(re) // full: nobody else can be seated
+	}
+}
+
+// addBot seats one computer player in re, with the next free bot id.
+func (l *Lobby) addBot(re *roomEntry) error {
+	id := botIDBase + l.lastBot + 1
+	if err := re.room.AddBot(id, botName); err != nil {
+		return err
+	}
+	l.lastBot++
+	re.bots++
+	return nil
+}
+
 // join puts p in the oldest room of game g that will take them, or in a new
 // room if there is none.
 //
@@ -296,7 +472,7 @@ func (l *Lobby) join(p *player, g Entry) {
 		re := l.oldestWaiting(g.Name)
 		fresh := re == nil
 		if fresh {
-			re = l.newRoom(g)
+			re = l.newRoom(g, false)
 		}
 
 		// Join waits for the room goroutine. That cannot deadlock: the room
@@ -308,9 +484,10 @@ func (l *Lobby) join(p *player, g Entry) {
 			p.state = stateInRoom
 			p.room = re
 			re.members = append(re.members, p.id)
-			if len(re.members) >= re.max {
+			if len(re.members)+re.bots >= re.max {
 				l.removeWaiting(re) // full: nobody else can be seated
 			}
+			l.syncFill(re)
 			return
 
 		case !fresh && roomIsClosedToNewcomers(err):
@@ -353,7 +530,9 @@ func (l *Lobby) leaveRoom(p *player) {
 	}
 	if len(re.members) == 0 {
 		l.closeRoom(re)
+		return
 	}
+	l.syncFill(re)
 }
 
 // roomOver handles a finished game: the players still in it move to the
@@ -376,20 +555,43 @@ func (l *Lobby) roomOver(re *roomEntry) {
 	l.closeRoom(re)
 }
 
+// roomCrashed handles a room whose game panicked (the room has already logged
+// the panic and stopped): the players in it go back to the menu with an
+// apology and the room is closed. Every other room carries on.
+func (l *Lobby) roomCrashed(re *roomEntry) {
+	if re.closed {
+		return // everyone had already left
+	}
+	l.log.Error("closing a crashed room", "game", re.game.Name, "players", len(re.members))
+	for _, id := range re.members {
+		p := l.players[uint64(id)]
+		if p == nil || p.state != stateInRoom || p.room != re {
+			continue
+		}
+		p.room = nil
+		l.showMenu(p, crashNotice)
+	}
+	re.members = nil
+	l.closeRoom(re)
+}
+
 // ---- rooms --------------------------------------------------------------
 
-// newRoom creates a room for game g and starts its goroutines. It is put in
-// the waiting list; join removes it once it is full.
-func (l *Lobby) newRoom(g Entry) *roomEntry {
+// newRoom creates a room for game g and starts its goroutines. A public room
+// is put in the waiting list, and join removes it once it is full; a private
+// room (one that is for a single player and a bot) is never listed.
+func (l *Lobby) newRoom(g Entry, private bool) *roomEntry {
 	gm := g.New()
-	_, max := gm.Seats()
+	min, max := gm.Seats()
 	tick, stopTicker := room.TickerFor(gm)
 	rm := room.New(gm, tick, l.log)
 
 	ctx, cancel := context.WithCancel(l.ctx)
-	re := &roomEntry{game: g, room: rm, cancel: cancel, max: max}
+	re := &roomEntry{game: g, room: rm, cancel: cancel, min: min, max: max, private: private}
 	l.rooms[re] = struct{}{}
-	l.waiting[g.Name] = append(l.waiting[g.Name], re)
+	if !private {
+		l.waiting[g.Name] = append(l.waiting[g.Name], re)
+	}
 
 	// Two goroutines per room, both owned by the lobby: they stop when ctx is
 	// cancelled (closeRoom, or the lobby itself stopping), and Run waits for
@@ -400,16 +602,26 @@ func (l *Lobby) newRoom(g Entry) *roomEntry {
 		defer stopTicker()
 		rm.Run(ctx)
 	}()
-	go func() { // tells the lobby when the game ends
+	go func() { // tells the lobby when the game ends, or when the room crashes
 		defer l.wg.Done()
+		var ev event
 		select {
 		case <-rm.Over():
-			// The lobby may be busy or its inbox full; give up if it stops.
-			select {
-			case l.events <- event{kind: evRoomOver, rm: re}:
-			case <-l.ctx.Done():
+			ev = event{kind: evRoomOver, rm: re}
+		case <-rm.Done():
+			// The room stops by itself only when its game panicked; a plain
+			// stop is the lobby cancelling ctx, and needs no message.
+			if !rm.Crashed() {
+				return
 			}
+			ev = event{kind: evRoomCrashed, rm: re}
 		case <-ctx.Done():
+			return
+		}
+		// The lobby may be busy or its inbox full; give up if it stops.
+		select {
+		case l.events <- ev:
+		case <-l.ctx.Done():
 		}
 	}()
 
@@ -424,6 +636,7 @@ func (l *Lobby) closeRoom(re *roomEntry) {
 		return
 	}
 	re.closed = true
+	l.syncFill(re) // stops its timer, if it has one
 	delete(l.rooms, re)
 	l.removeWaiting(re)
 	re.cancel()

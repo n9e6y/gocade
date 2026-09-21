@@ -41,3 +41,16 @@ func menuFrame(name string, games []Entry, notice string) []byte {
 	c.Text(2, 7+len(games), notice, render.Yellow)
 	return c.Frame()
 }
+
+// modeFrame asks how to play a game that has a bot. notice is a message shown
+// under the choices, or empty.
+func modeFrame(title, notice string) []byte {
+	c := render.NewCanvas(screenW, 10)
+	c.Text(2, 0, "ARENA", render.Yellow)
+	c.Text(2, 2, title, render.Default)
+	c.Text(4, 4, "1) Play online", render.Cyan)
+	c.Text(4, 5, "2) Play vs bot", render.Cyan)
+	c.Text(4, 6, "b) Back", render.Default)
+	c.Text(2, 8, notice, render.Yellow)
+	return c.Frame()
+}

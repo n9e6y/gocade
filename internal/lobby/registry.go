@@ -27,6 +27,17 @@ type Entry struct {
 	Name  string  // stable key, such as "tictactoe"
 	Title string  // what the menu shows, such as "Tic-Tac-Toe"
 	New   Factory // makes a game for a new room
+	Bots  bool    // players may choose to play against a bot (the game is a game.Advisor)
+}
+
+// EntryOption changes how a game is offered. See WithBots.
+type EntryOption func(*Entry)
+
+// WithBots offers a game with a "play vs bot" choice. Register checks that the
+// game really is a game.Advisor, so a game cannot promise a bot it does not
+// have.
+func WithBots() EntryOption {
+	return func(e *Entry) { e.Bots = true }
 }
 
 // Registry lists the games the lobby offers, in the order they were added
@@ -44,8 +55,9 @@ func NewRegistry() *Registry {
 }
 
 // Register adds a game. It rejects an empty name or title, a nil factory, a
-// name that is already taken, and a tenth game (see MaxGames).
-func (r *Registry) Register(name, title string, f Factory) error {
+// name that is already taken, a tenth game (see MaxGames), and WithBots for a
+// game that is not a game.Advisor.
+func (r *Registry) Register(name, title string, f Factory, opts ...EntryOption) error {
 	switch {
 	case name == "":
 		return fmt.Errorf("%w: empty name", ErrInvalidGame)
@@ -59,7 +71,17 @@ func (r *Registry) Register(name, title string, f Factory) error {
 	if _, ok := r.Lookup(name); ok {
 		return fmt.Errorf("%w: %q", ErrDuplicateGame, name)
 	}
-	r.entries = append(r.entries, Entry{Name: name, Title: title, New: f})
+	e := Entry{Name: name, Title: title, New: f}
+	for _, opt := range opts {
+		opt(&e)
+	}
+	if e.Bots {
+		// One extra game is made, only to look at it and throw it away.
+		if _, ok := f().(game.Advisor); !ok {
+			return fmt.Errorf("%w: game %q is offered with a bot but cannot play a seat", ErrInvalidGame, name)
+		}
+	}
+	r.entries = append(r.entries, e)
 	return nil
 }
 

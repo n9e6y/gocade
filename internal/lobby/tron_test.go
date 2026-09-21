@@ -8,11 +8,23 @@ import (
 	"github.com/n9e6y/gocade/internal/game/tron"
 )
 
-// tronRegistry offers real Tron, with the given settings, as menu choice 1.
+// tronRegistry offers real Tron, with the given settings, as menu choice 1. It
+// has no bot, so picking it joins a room straight away; tronBotsRegistry is the
+// same game with its bot.
 func tronRegistry(t *testing.T, cfg tron.Config) *Registry {
 	t.Helper()
 	reg := NewRegistry()
-	err := reg.Register("tron", "Tron", func() game.Game { return tron.NewWithConfig(cfg) })
+	err := reg.Register("tron", "Tron", func() game.Game { return noBot{tron.NewWithConfig(cfg)} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
+func tronBotsRegistry(t *testing.T, cfg tron.Config) *Registry {
+	t.Helper()
+	reg := NewRegistry()
+	err := reg.Register("tron", "Tron", func() game.Game { return tron.NewWithConfig(cfg) }, WithBots())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,4 +110,23 @@ func TestTron_LeavingDuringTheCountdownSendsTheOtherBackToWaiting(t *testing.T) 
 	bex.press("q") // back to the menu
 	bex.expect("q) Quit")
 	amy.expect("Waiting for another player")
+}
+
+// TestTron_VsBotPlaysARoundAndReturnsToTheMenu: one player, no friend. The
+// countdown starts at once because the bot fills the second seat, the round
+// runs on the real tick loop with the bot steering, and it ends (the human
+// never steers, so they crash sooner or later) with the usual result screen.
+func TestTron_VsBotPlaysARoundAndReturnsToTheMenu(t *testing.T) {
+	t.Parallel()
+
+	addr := startArenaWith(t, tronBotsRegistry(t, fastTron()))
+	ann := join(t, addr, "ann")
+	ann.press("1")
+	ann.expect("2) Play vs bot")
+	ann.press("2")
+
+	ann.expect("Starting in 3")
+	ann.expect("Press Enter to return to the menu.") // the round ran to its end
+	ann.press("\r")
+	ann.expect("q) Quit")
 }

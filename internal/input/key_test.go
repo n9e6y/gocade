@@ -121,3 +121,28 @@ func TestKind_String(t *testing.T) {
 		}
 	}
 }
+
+func TestDir_Key(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		dir  Dir
+		want Key
+	}{
+		{DirUp, k(KindUp)},
+		{DirDown, k(KindDown)},
+		{DirLeft, k(KindLeft)},
+		{DirRight, k(KindRight)},
+		{Dir(0), Key{}}, // not a direction: no key
+	}
+
+	for _, tt := range tests {
+		if got := tt.dir.Key(); got != tt.want {
+			t.Errorf("Dir(%d).Key() = %v, want %v", tt.dir, got, tt.want)
+		}
+		// Key and Direction are inverses.
+		if d, ok := tt.dir.Key().Direction(); tt.dir != 0 && (!ok || d != tt.dir) {
+			t.Errorf("Dir(%d).Key().Direction() = (%v, %v), want the same direction", tt.dir, d, ok)
+		}
+	}
+}

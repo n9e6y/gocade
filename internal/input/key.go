@@ -62,6 +62,22 @@ const (
 	DirRight
 )
 
+// Key returns the arrow key for d, the inverse of Key.Direction. It returns the
+// zero Key for a Dir that is not one of the four directions.
+func (d Dir) Key() Key {
+	switch d {
+	case DirUp:
+		return Key{Kind: KindUp}
+	case DirDown:
+		return Key{Kind: KindDown}
+	case DirLeft:
+		return Key{Kind: KindLeft}
+	case DirRight:
+		return Key{Kind: KindRight}
+	}
+	return Key{}
+}
+
 // Direction reports the direction this key means: an arrow key, or w, a, s,
 // d in either case.
 func (k Key) Direction() (Dir, bool) {

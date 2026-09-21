@@ -40,15 +40,34 @@ func (s *Session) Close() {
 	}
 }
 
-// Send queues frame for the writer goroutine. It never blocks: if the out
-// buffer is full (the client is too slow), the frame is dropped, counted, and
-// Send returns false. A slow client therefore loses frames instead of
-// stalling the goroutine that produced them, and the next frame is a fresh
-// full picture anyway.
+// Send queues frame for the writer goroutine. It never blocks. If the out
+// buffer is full (the client is too slow), the oldest queued frame is thrown
+// away to make room, and counted as dropped: every frame is a complete picture
+// of the game, so the newest one is the one worth keeping, and it may be the
+// final result. A slow client therefore loses old frames instead of stalling
+// the goroutine that produced them, and always ends up with the latest.
+//
+// Send reports whether frame itself was queued. It can be false only if the
+// buffer cannot hold even one frame, or if two goroutines sending at the same
+// moment take each other's freed slot (the room and the lobby can both send to
+// one player); then frame is dropped and counted instead.
 //
 // Send is safe to call from any goroutine, including after the session has
 // closed: out is never closed, so a late Send is just dropped or discarded.
 func (s *Session) Send(frame []byte) bool {
+	select {
+	case s.out <- frame:
+		return true
+	default:
+	}
+
+	// Full: discard the oldest frame, then try once more. The writer may have
+	// emptied the buffer in between, in which case there is nothing to discard.
+	select {
+	case <-s.out:
+		s.dropped.Add(1)
+	default:
+	}
 	select {
 	case s.out <- frame:
 		return true
