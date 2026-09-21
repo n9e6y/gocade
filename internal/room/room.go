@@ -4,6 +4,10 @@
 // that ever touches the Game or the room's player table. Everyone else (the
 // session goroutines) talks to it by sending events over a channel. That is
 // the whole concurrency story: one owner, communication instead of locking.
+//
+// Computer players (see AddBot) need no goroutine of their own: the room asks
+// the game what each bot should press after every change. And a panic in the
+// game is caught in Run, so a bug in one game ends that room, not the server.
 package room
 
 import (

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -30,6 +31,8 @@ type config struct {
 	fillWait    time.Duration // how long a lone player waits before a bot joins; 0 turns it off
 	maxConns    int           // most simultaneous connections; 0 means no limit
 	idleTimeout time.Duration // a client silent this long is disconnected; 0 means never
+	tick        time.Duration // how often Tron advances; 0 means the game's default
+	logLevel    slog.Level    // records below this level are dropped
 }
 
 // The most keys a client may send: about ten times what a fast player types
@@ -40,18 +43,19 @@ const (
 )
 
 func main() {
-	var cfg config
-	flag.StringVar(&cfg.addr, "addr", ":9000", "TCP address to listen on")
-	flag.DurationVar(&cfg.fillWait, "fill-wait", 10*time.Second, "how long a player waits alone before a bot joins (0 to turn off)")
-	flag.IntVar(&cfg.maxConns, "max-conns", 1000, "most simultaneous connections (0 for no limit)")
-	flag.DurationVar(&cfg.idleTimeout, "idle-timeout", 5*time.Minute, "disconnect a client that sends nothing for this long (0 to turn off)")
-	flag.Parse()
+	cfg, err := parseFlags(os.Args[1:], os.Stderr)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return // the usage has been printed
+		}
+		os.Exit(2)
+	}
 
 	// Ctrl-C or SIGTERM cancels ctx, which is what stops the server.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	log := newLogger(cfg.logLevel, os.Stderr)
 
 	if err := run(ctx, os.Stdout, version, cfg, log); err != nil {
 		log.Error("arena failed", "err", err)
@@ -61,14 +65,14 @@ func main() {
 	log.Info("shutdown complete")
 }
 
-// run prints the version line, then serves on cfg.addr until ctx is cancelled.
-func run(ctx context.Context, out io.Writer, version string, cfg config, log *slog.Logger) error {
-	if _, err := fmt.Fprintf(out, "arena %s\n", version); err != nil {
-		return fmt.Errorf("write version: %w", err)
+// newRegistry lists the games on offer. Adding a game to Arena is one new
+// package plus one line in the list below.
+func newRegistry(cfg config) (*lobby.Registry, error) {
+	tronCfg := tron.DefaultConfig()
+	if cfg.tick > 0 {
+		tronCfg.Tick = cfg.tick
 	}
 
-	// The games on offer. Adding a game to Arena is one new package plus one
-	// line here.
 	reg := lobby.NewRegistry()
 	games := []struct {
 		name, title string
@@ -76,12 +80,25 @@ func run(ctx context.Context, out io.Writer, version string, cfg config, log *sl
 		opts        []lobby.EntryOption
 	}{
 		{"tictactoe", "Tic-Tac-Toe", func() game.Game { return tictactoe.New() }, []lobby.EntryOption{lobby.WithBots()}},
-		{"tron", "Tron", func() game.Game { return tron.New() }, []lobby.EntryOption{lobby.WithBots()}},
+		{"tron", "Tron", func() game.Game { return tron.NewWithConfig(tronCfg) }, []lobby.EntryOption{lobby.WithBots()}},
 	}
 	for _, g := range games {
 		if err := reg.Register(g.name, g.title, g.factory, g.opts...); err != nil {
-			return fmt.Errorf("register games: %w", err)
+			return nil, fmt.Errorf("register games: %w", err)
 		}
+	}
+	return reg, nil
+}
+
+// run prints the version line, then serves on cfg.addr until ctx is cancelled.
+func run(ctx context.Context, out io.Writer, version string, cfg config, log *slog.Logger) error {
+	if _, err := fmt.Fprintf(out, "arena %s\n", version); err != nil {
+		return fmt.Errorf("write version: %w", err)
+	}
+
+	reg, err := newRegistry(cfg)
+	if err != nil {
+		return err
 	}
 
 	ln, err := net.Listen("tcp", cfg.addr)

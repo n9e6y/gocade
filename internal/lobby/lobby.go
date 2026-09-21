@@ -2,6 +2,11 @@
 // nickname, picks a game from a menu, and is matched with someone else who
 // picked the same game. When the game ends they return to the menu.
 //
+// A game that has a bot also offers "play vs bot": the player gets a private
+// room with a computer opponent and starts at once. Someone who waits alone
+// in an online room gets a bot too, after a short wait (see WithFillWait). A
+// room whose game panics is closed and its players are sent back to the menu.
+//
 // The Lobby is one goroutine that owns everything mutable: every player and
 // every room. Session goroutines never touch that state; they post events to
 // it over a channel. That is why the lobby needs no mutex.

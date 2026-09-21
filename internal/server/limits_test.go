@@ -50,8 +50,8 @@ func TestRun_ConnectionCapTurnsExtraClientsAway(t *testing.T) {
 	})
 }
 
-// A server with no cap accepts as many as come (Stage 1's 100-client test
-// relies on this).
+// A server with no cap accepts as many as come (the 100-client test relies on
+// this).
 func TestRun_NoCapByDefault(t *testing.T) {
 	t.Parallel()
 

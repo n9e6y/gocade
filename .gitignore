@@ -38,3 +38,6 @@ go.work.sum
 STAGES.md
 CLAUDE.md
 /docs/decisions.md
+
+# Built by make bin / make demo / make loadtest
+bin/

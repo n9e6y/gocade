@@ -127,6 +127,7 @@ func TestFill_ASecondPlayerArrivingCancelsIt(t *testing.T) {
 	ben := named(t, l, "ben")
 	ben.press("11")
 	ann.expect("Starting in 3")
+	l.Stats() // ann's frame is sent while ben is still joining; this waits until the lobby has finished with him
 
 	if clock.active() != 0 {
 		t.Errorf("active timers = %d, want 0: ann has company now", clock.active())

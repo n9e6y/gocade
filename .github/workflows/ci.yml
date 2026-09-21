@@ -12,11 +12,23 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest Go the module claims (keep in step with go.mod) and the newest.
+        go: ["1.23", "stable"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go }}
+      - run: make build
       - run: make vet
       - run: make fmt-check
+      # The race detector runs every test, including the 50-room load test.
       - run: make test
+      # Fuzz the input decoder for a few seconds.
+      - run: make fuzz FUZZTIME=10s
+      # Run every benchmark once, so they keep compiling and running.
+      - run: go test -run '^$' -bench . -benchtime=1x ./...
