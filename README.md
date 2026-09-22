@@ -3,8 +3,8 @@
 [![ci](https://github.com/n9e6y/gocade/actions/workflows/ci.yml/badge.svg)](https://github.com/n9e6y/gocade/actions/workflows/ci.yml)
 
 A multiplayer terminal-game server written in Go. Anyone can play by typing `nc host 9000`: no client
-software, no dependencies, standard library only. Real-time Tron and turn-based Tic-Tac-Toe, with bots
-for solo play.
+software, no dependencies, standard library only. Real-time Tron and Snake, and turn-based Tic-Tac-Toe,
+with bots for solo play.
 
 <!-- Uncomment after recording (see docs/recording.md):
 ![Arena demo](docs/demo.gif)
@@ -39,6 +39,35 @@ Tron against the bot (colors omitted here; every player gets their own color, an
 Steer with the arrow keys or W A S D
 ```
 
+Snake against the bot, on a board with no walls — steer off one edge and you come back on the
+opposite side — racing for the one shared pellet that appears at a time:
+
+```text
+█ name (you)  █ Bot
++----------------------------------------+
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|        @     █                     *   |
+|              █                         |
+|             @█                         |
+|                                        |
+|                                        |
+|                                        |
++----------------------------------------+
+Steer with the arrow keys or W A S D. Reach the * to grow!
+```
+
 Tic-Tac-Toe against bot, and the menu:
 
 ```text
@@ -63,6 +92,7 @@ Tic-Tac-Toe against bot, and the menu:
   Pick a game:
     1) Tic-Tac-Toe
     2) Tron
+    3) Snake
     q) Quit
 ```
 
@@ -75,8 +105,8 @@ make demo
 ```
 
 `make demo` builds the server, starts it in the background, connects your terminal, and stops everything
-when you quit. Type a nickname, pick **2** (Tron), then **2** (play vs bot). You are playing within
-seconds.
+when you quit. Type a nickname, pick **2** (Tron) or **3** (Snake), then **2** (play vs bot). You are
+playing within seconds.
 
 You need Go 1.23 or newer, `nc` (netcat) and a terminal of at least 70x24 on macOS or Linux (Windows: use
 WSL). Everything below uses only these.
@@ -104,8 +134,11 @@ The `stty` line matters: it makes every key press reach the game at once, instea
    matched with the next person who picks the same game) or **2) Play vs bot** (a private game starts at
    once).
 3. **Tic-Tac-Toe:** press `1`-`9` to claim a cell. **Tron:** steer with the arrow keys or `W A S D`. Hit a
-   wall, a trail or another head and you are out; the last one alive wins. Two to four players; a 3-2-1
-   countdown starts when the second one arrives.
+   wall, a trail or another head and you are out; the last one alive wins. **Snake:** same steering, but
+   the board wraps at every edge instead of having walls, so only a body (yours or another player's) can
+   end you. One `*` pellet is on the board at a time; whoever reaches it first grows by a segment, and a
+   new one appears elsewhere. Both real-time games seat two to four players, with a 3-2-1 countdown once
+   the second one arrives.
 4. When a game ends, press Enter to return to the menu. `q` leaves a game (that forfeits it) and quits from
    the menu.
 
@@ -161,16 +194,21 @@ Every piece of mutable state has exactly one owning goroutine. Everyone else ask
   client sees a choppy screen instead of a stalled game.
 - **Time is injected.** Rooms receive a tick channel and the lobby receives its timer function, so tests
   fire ticks and timers by hand and never sleep to wait for a clock.
-- **Games are pure.** No goroutines, no network, no clock, no randomness. The same inputs always give the
-  same game, so a recorded input script replays to identical frames (there are tests for exactly that).
-  Tron decides every move from the board at the start of the tick and applies them afterwards, so seat
-  order gives nobody an advantage.
+- **Games are pure.** No goroutines, no network, no clock. The same inputs always give the same game, so
+  a recorded input script replays to identical frames (there are tests for exactly that). Both real-time
+  games decide every move from the board at the start of the tick and apply them afterwards, so seat
+  order gives nobody an advantage. Snake is the one game with any randomness — where food appears — and
+  even that stays pure: it comes from a `*rand.Rand` seeded by an explicit `Config.Seed`, so the same
+  seed and the same Joins, Inputs and Ticks always place food the same way too. Each room gets its own
+  seed at startup; a fixed one is what makes the replay tests exact.
 - **A bot is a player whose keys come from the game itself.** Games that can play implement a one-method
   `game.Advisor` (`Advise(player) -> key`). The room seats a bot through the same `Join` as a person and,
   after every change, feeds each bot's answer to `Game.Input`. No bot goroutines and no exported game
   state. Tic-Tac-Toe uses minimax (a test plays every possible human game and checks the bot never
-  loses); Tron uses a flood fill over each safe direction. *Cost:* bot code runs on the room goroutine
-  (measured below: microseconds), and the Tron bot is greedy, so a human can trap it.
+  loses); Tron and Snake use a flood fill over each safe direction (Snake also breaks ties toward the
+  food, but only among directions with room to spare — since the board wraps, "more open" alone never
+  breaks a tie the way it does inside Tron's walls). *Cost:* bot code runs on the room goroutine (measured
+  below: microseconds), and both flood-fill bots are greedy, so a human can trap them.
 - **A crash stays in its room.** A panic in a game, a bot or a render is recovered inside the room,
   logged with its stack, and the lobby sends its players back to the menu. *Limit:* a panic in the lobby
   or a session goroutine is not recovered.
@@ -195,9 +233,9 @@ make bench                   # benchmarks
 make loadtest                # 50 rooms of fake players against a race-enabled server
 ```
 
-- Table-driven tests for the rules (every Tron and Tic-Tac-Toe case in the spec), golden files for the
-  renderer's exact bytes, replay tests for determinism, and a fake clock and hand-driven ticks for
-  everything time-based.
+- Table-driven tests for the rules (every case in each game's spec — Tron, Snake and Tic-Tac-Toe), golden
+  files for the renderer's exact bytes, replay tests for determinism (Snake's also lock down where food
+  appears, on a fixed seed), and a fake clock and hand-driven ticks for everything time-based.
 - Rooms and the lobby are tested with fakes and `net.Pipe`; a few integration tests use a real listener
   on `127.0.0.1:0`. A 50-player stress test checks that nothing (player, room or goroutine) is left
   behind.
@@ -214,9 +252,12 @@ make loadtest                # 50 rooms of fake players against a race-enabled s
 | `BenchmarkTronTick` | 43 ns | 80 B, 1 alloc | one tick with two heads moving |
 | `BenchmarkTronView` | 6.2 µs | 18 KB, 5 allocs | drawing one player's frame, four players mid-round |
 | `BenchmarkAdvise` (tron) | 35 µs | 29.7 KB, 8 allocs | one bot decision on the default board |
+| `BenchmarkSnakeTick` | 1.1 µs | 2.5 KB, 4 allocs | one tick, two snakes moving and eating |
+| `BenchmarkSnakeView` | 6.4 µs | 18 KB, 5 allocs | drawing one player's frame, four snakes mid-round |
+| `BenchmarkAdvise` (snake) | 47 µs | 29.8 KB, 12 allocs | one bot decision, including the food-distance check |
 | `BenchmarkAdvise` (tictactoe) | 1.4 ms | none | the bot's reply to an opening move, its worst case |
 
-A four-player Tron room costs well under a millisecond per 120 ms tick, about 0.1% of one core.
+A four-player Tron or Snake room costs well under a millisecond per 120 ms tick, about 0.1% of one core.
 
 **Load test** (`make loadtest`; localhost, 50 rooms for 10 seconds, real 120 ms tick, server built with
 `-race`, same machine). Fake players open real TCP connections, press random arrow keys and keep
@@ -254,7 +295,7 @@ really is an `Advisor`.
 | Flag | Default | Meaning |
 |---|---|---|
 | `-addr` | `:9000` | TCP address to listen on |
-| `-tick` | `120ms` | how often Tron advances (at least `10ms`) |
+| `-tick` | `120ms` | how often the real-time games (Tron, Snake) advance (at least `10ms`) |
 | `-log-level` | `info` | `debug`, `info`, `warn` or `error` |
 | `-fill-wait` | `10s` | how long a player waits alone before a bot joins (`0` turns it off) |
 | `-max-conns` | `1000` | most simultaneous connections (`0` for no limit) |
@@ -268,7 +309,7 @@ cmd/loadtest     the load generator
 internal/server  listener, sessions (reader and writer goroutines), connection limits
 internal/input   raw bytes to key events
 internal/render  canvas and ANSI frames
-internal/game    the Game interface; tictactoe/ and tron/ (pure rules, views and bots)
+internal/game    the Game interface; tictactoe/, tron/ and snake/ (pure rules, views and bots)
 internal/room    owns one game and runs its loop
 internal/lobby   nicknames, menus, matchmaking, bots, room registry
 internal/loadtest  the fake players behind cmd/loadtest
@@ -277,8 +318,9 @@ scripts/         play, demo and loadtest helpers used by the Makefile
 
 ## Known limits
 
-- A room sends a frame after every key press as well as every tick. In Tron a key press changes nothing
-  that is drawn, so those frames repeat the last one. Skipping byte-identical frames would fix it.
+- A room sends a frame after every key press as well as every tick. In Tron and Snake a key press only
+  sets the next direction and changes nothing that is drawn, so those frames repeat the last one. Skipping
+  byte-identical frames would fix it.
 - The lobby is one goroutine. That is what keeps it simple and race-free, and it is the first thing to
   split (by game, say) if this had to serve thousands of players.
 - Panics are recovered per room only, not in the lobby or session goroutines.

@@ -128,8 +128,8 @@ func TestNewRegistry(t *testing.T) {
 	}
 
 	entries := reg.Entries()
-	if len(entries) != 2 || entries[0].Name != "tictactoe" || entries[1].Name != "tron" {
-		t.Fatalf("games = %+v, want tictactoe then tron", entries)
+	if len(entries) != 3 || entries[0].Name != "tictactoe" || entries[1].Name != "tron" || entries[2].Name != "snake" {
+		t.Fatalf("games = %+v, want tictactoe, tron, snake", entries)
 	}
 	for _, e := range entries {
 		if !e.Bots {
@@ -139,9 +139,37 @@ func TestNewRegistry(t *testing.T) {
 	if got := entries[0].New().TickEvery(); got != 0 {
 		t.Errorf("Tic-Tac-Toe TickEvery() = %v, want 0 (turn-based)", got)
 	}
-	// The -tick flag is what Tron ticks at.
+	// The -tick flag is what the real-time games tick at.
 	if got := entries[1].New().TickEvery(); got != 60*time.Millisecond {
 		t.Errorf("Tron TickEvery() = %v, want 60ms from the flag", got)
+	}
+	if got := entries[2].New().TickEvery(); got != 60*time.Millisecond {
+		t.Errorf("Snake TickEvery() = %v, want 60ms from the flag", got)
+	}
+
+	// Each new Snake game gets its own random food seed, not the same one
+	// every room: start several fresh games, tick well past the default
+	// countdown, and check they do not all place their first pellet the same
+	// way.
+	firstFrame := func() string {
+		g := entries[2].New()
+		g.Join(1, "a")
+		g.Join(2, "b")
+		for i := 0; i < 30; i++ { // more than the default 3*8 countdown ticks
+			g.Tick()
+		}
+		return string(g.View(1).Frame())
+	}
+	first := firstFrame()
+	differed := false
+	for i := 0; i < 5; i++ {
+		if firstFrame() != first {
+			differed = true
+			break
+		}
+	}
+	if !differed {
+		t.Error("five fresh Snake games all placed their first pellet the same way; want a random seed per room")
 	}
 }
 

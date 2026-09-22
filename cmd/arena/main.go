@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/n9e6y/gocade/internal/game"
+	"github.com/n9e6y/gocade/internal/game/snake"
 	"github.com/n9e6y/gocade/internal/game/tictactoe"
 	"github.com/n9e6y/gocade/internal/game/tron"
 	"github.com/n9e6y/gocade/internal/lobby"
@@ -72,6 +74,10 @@ func newRegistry(cfg config) (*lobby.Registry, error) {
 	if cfg.tick > 0 {
 		tronCfg.Tick = cfg.tick
 	}
+	snakeCfg := snake.DefaultConfig()
+	if cfg.tick > 0 {
+		snakeCfg.Tick = cfg.tick
+	}
 
 	reg := lobby.NewRegistry()
 	games := []struct {
@@ -81,6 +87,14 @@ func newRegistry(cfg config) (*lobby.Registry, error) {
 	}{
 		{"tictactoe", "Tic-Tac-Toe", func() game.Game { return tictactoe.New() }, []lobby.EntryOption{lobby.WithBots()}},
 		{"tron", "Tron", func() game.Game { return tron.NewWithConfig(tronCfg) }, []lobby.EntryOption{lobby.WithBots()}},
+		// Each room gets its own random seed, so different rooms place food
+		// differently; snake.Config.Seed only needs to be fixed for tests,
+		// where the same food placement every run is the point.
+		{"snake", "Snake", func() game.Game {
+			cfg := snakeCfg
+			cfg.Seed = rand.Int64()
+			return snake.NewWithConfig(cfg)
+		}, []lobby.EntryOption{lobby.WithBots()}},
 	}
 	for _, g := range games {
 		if err := reg.Register(g.name, g.title, g.factory, g.opts...); err != nil {

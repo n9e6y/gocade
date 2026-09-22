@@ -37,7 +37,7 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	fs.DurationVar(&cfg.fillWait, "fill-wait", 10*time.Second, "how long a player waits alone before a bot joins (0 to turn off)")
 	fs.IntVar(&cfg.maxConns, "max-conns", 1000, "most simultaneous connections (0 for no limit)")
 	fs.DurationVar(&cfg.idleTimeout, "idle-timeout", 5*time.Minute, "disconnect a client that sends nothing for this long (0 to turn off)")
-	fs.DurationVar(&cfg.tick, "tick", 120*time.Millisecond, "how often Tron advances (at least "+minTick.String()+")")
+	fs.DurationVar(&cfg.tick, "tick", 120*time.Millisecond, "how often the real-time games (Tron, Snake) advance (at least "+minTick.String()+")")
 	fs.StringVar(&level, "log-level", "info", "log detail: debug, info, warn or error")
 
 	if err := fs.Parse(args); err != nil {
